@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Create new list",
+        "description": "Family Todo creates a real todo list that works with Home Assistant's own to-do card and voice assistant (Assist). Add more lists directly in the sidepanel.",
+        "data": {
+          "name": "Name",
+          "icon": "Icon",
+          "color": "Color"
+        }
+      }
+    },
+    "error": {
+      "name_required": "Name is required"
+    }
+  }
+}

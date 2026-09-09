@@ -1,0 +1,72 @@
+# Family Todo – idélista / checklista
+
+## Grundfunktioner (v0.1)
+- [x] Varje lista är en riktig `todo.*`-entitet (en config entry per lista,
+  samma modell som cal_combiner använder för sammanslagna kalendrar)
+- [x] Skapa/döp om/ta bort listor direkt i sidopanelen, ingen omväg via
+  Inställningar krävs för varje ny lista
+- [x] Skapa/redigera/bocka av/ta bort/flytta uppgifter (CRUD + ordning)
+  via HA:s vanliga todo-gränssnitt (röstassistent, todo-kortet, panelen)
+- [x] Tilldelad person per uppgift (fritext, eller vald bland
+  `person.*`-entiteter) – egen utökningsdata, se README
+- [x] Delsteg (checklista) per uppgift – egen utökningsdata, se README
+- [x] Lagring städas bort när en lista tas bort (samma lärdom som
+  cal_combiner redan dragit för sina egna kalendrar)
+
+## Sysslor/chores med tilldelning och rotation (ej påbörjat)
+Ursprungligen ett alternativt scope för hela integrationen – landade
+istället som en idé att bygga ovanpå v0.1 istället för att vara grunden,
+för att inte låsa fast datamodellen i ett smalare användningsfall från
+början.
+
+- [ ] Återkommande sysslor (t.ex. "Diska" varje dag, "Dammsuga" varje
+  vecka) som automatiskt dyker upp som en ny, oavbockad uppgift enligt
+  ett schema – snarare än att man manuellt lägger till samma uppgift om
+  och om igen
+- [ ] Rotation mellan flera personer – syslan tilldelas automatiskt nästa
+  person i tur när den blivit avbockad/schemat går vidare, istället för
+  att alltid ligga på samma tilldelade person
+- [ ] Poäng/streak-räkning per person (hur många sysslor gjorda denna
+  vecka, i rad, osv.) – "gamification" för att göra sysslor mer
+  motiverande för barn
+- [ ] Ett eget vy-läge i panelen (eller ett separat kort) som visar
+  "veckans sysslor" grupperat per person, istället för dagens
+  lista-per-lista-vy
+- [ ] Notis/påminnelse när en syssla inte är avbockad vid en viss tid
+
+## Synlighet för delsteg/tilldelning utanför panelen
+- [ ] Skriva in en sammanfattning av delstegsstatus ("2/5 delsteg klara")
+  i uppgiftens `description`-fält vid varje ändring, så det syns även i
+  HA:s eget todo-kort och röstassistenten – **medvetet inte gjort i v0.1**
+  eftersom det skulle skriva över/blanda ihop med en beskrivning
+  användaren själv skrivit i det fältet. Kräver ett sätt att skilja
+  "vår auto-genererade rad" från användarens egen text (t.ex. en tydlig
+  markör-rad) innan det är säkert att göra automatiskt.
+- [ ] Motsvarande för tilldelad person – t.ex. som prefix i titeln
+  ("[Anna] Handla mjölk") om man vill se tilldelningen även i det vanliga
+  todo-kortet, med samma varning som ovan om att inte skriva över
+  användarens egen text oavsiktligt.
+
+## Robusthet
+- [ ] Repair-issue om en listas lagringsfil är korrupt, istället för att
+  bara tyst visa en tom lista
+- [ ] Diagnostics-stöd (`diagnostics.py`) för att exportera
+  felsökningsdata via HA:s inbyggda diagnostics-gränssnitt
+
+## Sidopanel
+- [x] Flikar per lista + en "Ny lista"-flik
+- [x] Lägg till/bocka av/ta bort uppgifter direkt i panelen
+- [x] Klicka på en uppgift för att expandera delsteg + tilldelning
+- [ ] Drag-och-släpp för att ändra ordning på uppgifter (idag bara stöd
+  i backend/entiteten via `async_move_todo_item`, inget UI för det i
+  panelen än – ordningen syns som den lagras, men går bara att ändra via
+  HA:s eget todo-kort om det stödjer drag-och-släpp)
+- [ ] Filtrera/sortera uppgifter per tilldelad person i panelen
+
+## Trevligt-att-ha (ej påbörjat)
+- [ ] Koppling mot family-planner-card: visa dagens/veckans obockade
+  uppgifter (särskilt sysslor tilldelade ett barn) i "Idag"-vyn, liknande
+  hur family-planner-card redan visar binary_sensor-baserade "allmänna
+  sensorer"
+- [ ] Delade listor mellan flera HA-instanser (t.ex. två hushåll) –
+  troligen orealistiskt utan en molntjänst, låg prioritet

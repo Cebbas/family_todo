@@ -1,0 +1,420 @@
+class FamilyTodoPanel extends HTMLElement {
+  constructor() {
+    super();
+    // Riktig shadow root krävs för att våra generiska tagg-/klassväljare
+    // (button, input, h1, *, ...) ska stanna kvar inuti panelen istället
+    // för att läcka ut och gälla globalt i hela HA-appen (se cal_combiner-
+    // panelens motsvarande kommentar - samma bugg, samma fix).
+    this.attachShadow({ mode: "open" });
+    this._lists = [];
+    this._persons = [];
+    this._items = {}; // entry_id -> items[]
+    this._activeListId = null;
+    this._openItems = {}; // uid -> bool (delsteg/tilldelning expanderat)
+    this._initialized = false;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._initialized) {
+      this._initialized = true;
+      this._boot();
+    }
+  }
+
+  get hass() {
+    return this._hass;
+  }
+
+  async _boot() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; box-sizing: border-box; min-height: 100%; padding: 16px;
+          max-width: 720px; margin: 0 auto;
+          font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); }
+        *, *::before, *::after { box-sizing: border-box; }
+        h1 { font-size: 24px; font-weight: 400; color: var(--primary-text-color); margin: 4px 0 4px 0;
+          display: flex; align-items: center; gap: 10px; }
+        h1 ha-icon { --mdc-icon-size: 28px; color: var(--primary-color); }
+        p.subtitle { color: var(--secondary-text-color); margin-top: 0; margin-bottom: 20px; }
+        .ft-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+        .ft-tab { display: flex; align-items: center; gap: 6px; padding: 6px 14px; cursor: pointer;
+          background: var(--secondary-background-color, #eee); border: 1px solid transparent; border-radius: 999px;
+          font-size: 13px; color: var(--primary-text-color); }
+        .ft-tab.active { background: var(--primary-color); color: var(--text-primary-color, white); }
+        .ft-tab-new { background: transparent; border: 1px dashed var(--divider-color, #ccc);
+          color: var(--secondary-text-color); }
+        .ft-tab ha-icon { --mdc-icon-size: 16px; }
+        .ft-card { background: var(--card-background-color, white); border-radius: var(--ha-card-border-radius, 12px);
+          box-shadow: var(--ha-card-box-shadow, 0 2px 4px rgba(0,0,0,0.1)); padding: 16px; margin-bottom: 16px;
+          border: 1px solid var(--ha-card-border-color, transparent); }
+        .ft-card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+        .ft-card-header ha-icon { --mdc-icon-size: 24px; color: var(--primary-color); flex-shrink: 0; }
+        .ft-card-header input[type="text"].ft-name { font-size: 16px; font-weight: 500; flex: 1; }
+        .ft-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+        input[type="text"], input[type="date"], select {
+          padding: 8px 10px; border-radius: 6px; min-width: 120px;
+          border: 1px solid var(--divider-color, #ccc); background: var(--card-background-color);
+          color: var(--primary-text-color); font-size: 14px; box-sizing: border-box; }
+        input[type="text"] { flex: 1; }
+        button { border: none; border-radius: 6px; padding: 8px 14px; font-size: 14px; cursor: pointer;
+          background: var(--primary-color); color: var(--text-primary-color, white); }
+        button.secondary { background: transparent; color: var(--primary-color);
+          border: 1px solid var(--primary-color); }
+        button.danger { background: var(--error-color, #db4437); color: white; }
+        button.text { background: none; color: var(--primary-color); padding: 4px 8px; }
+        button:disabled { opacity: .4; cursor: default; }
+        .ft-item { border-bottom: 1px solid var(--divider-color, #eee); padding: 8px 0; }
+        .ft-item:last-child { border-bottom: none; }
+        .ft-item-row { display: flex; align-items: center; gap: 8px; }
+        .ft-item-row input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; cursor: pointer; }
+        .ft-item-summary { flex: 1; font-size: 14px; cursor: pointer; }
+        .ft-item-summary.done { text-decoration: line-through; color: var(--secondary-text-color); }
+        .ft-item-meta { font-size: 12px; color: var(--secondary-text-color); margin-left: 28px; margin-top: 2px;
+          display: flex; gap: 10px; flex-wrap: wrap; }
+        .ft-item-detail { margin-left: 28px; margin-top: 8px; padding: 10px; border-radius: 8px;
+          background: var(--secondary-background-color, #f4f4f4); }
+        .ft-subtask-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+        .ft-subtask-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+        .ft-subtask-row span.done { text-decoration: line-through; color: var(--secondary-text-color); }
+        .ft-empty { color: var(--secondary-text-color); font-size: 14px; padding: 12px 0; }
+        .ft-progress { font-size: 11px; padding: 1px 6px; border-radius: 999px;
+          background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); }
+      </style>
+      <h1><ha-icon icon="mdi:format-list-checks"></ha-icon>Att göra</h1>
+      <p class="subtitle">Skapa listor här - varje lista blir en riktig todo-lista i Home Assistant
+        (funkar med röstassistenten och det inbyggda todo-kortet). Delsteg och tilldelning per uppgift
+        finns bara här i panelen.</p>
+      <div class="ft-tabs" id="tabs"></div>
+      <div id="content"></div>
+    `;
+    await this._reloadLists();
+  }
+
+  async _reloadLists() {
+    const [{ lists }, { persons }] = await Promise.all([
+      this._hass.callWS({ type: "family_todo/list_lists" }),
+      this._hass.callWS({ type: "family_todo/list_persons" }),
+    ]);
+    this._lists = lists;
+    this._persons = persons;
+    if (!this._activeListId || (this._activeListId !== "__new__" && !lists.find((l) => l.entry_id === this._activeListId))) {
+      this._activeListId = lists.length ? lists[0].entry_id : "__new__";
+    }
+    if (this._activeListId !== "__new__") {
+      await this._reloadItems(this._activeListId);
+    }
+    this._render();
+  }
+
+  async _reloadItems(entryId) {
+    const { items } = await this._hass.callWS({ type: "family_todo/list_items", entry_id: entryId });
+    this._items[entryId] = items;
+  }
+
+  _render() {
+    this._renderTabs();
+    this._renderContent();
+  }
+
+  _renderTabs() {
+    const tabs = this.shadowRoot.getElementById("tabs");
+    tabs.innerHTML = "";
+    for (const list of this._lists) {
+      const btn = document.createElement("button");
+      btn.className = "ft-tab" + (this._activeListId === list.entry_id ? " active" : "");
+      btn.innerHTML = `<ha-icon icon="${list.icon || "mdi:format-list-checks"}"></ha-icon>`;
+      btn.append(list.name);
+      btn.addEventListener("click", async () => {
+        this._activeListId = list.entry_id;
+        await this._reloadItems(list.entry_id);
+        this._render();
+      });
+      tabs.appendChild(btn);
+    }
+    const newBtn = document.createElement("button");
+    newBtn.className = "ft-tab ft-tab-new" + (this._activeListId === "__new__" ? " active" : "");
+    newBtn.innerHTML = `<ha-icon icon="mdi:plus"></ha-icon>Ny lista`;
+    newBtn.addEventListener("click", () => {
+      this._activeListId = "__new__";
+      this._render();
+    });
+    tabs.appendChild(newBtn);
+  }
+
+  _renderContent() {
+    const content = this.shadowRoot.getElementById("content");
+    content.innerHTML = "";
+    if (this._activeListId === "__new__") {
+      content.appendChild(this._renderNewListCard());
+      return;
+    }
+    const list = this._lists.find((l) => l.entry_id === this._activeListId);
+    if (!list) return;
+    content.appendChild(this._renderListCard(list));
+  }
+
+  _renderNewListCard() {
+    const card = document.createElement("div");
+    card.className = "ft-card";
+    card.innerHTML = `
+      <div class="ft-card-header"><ha-icon icon="mdi:plus"></ha-icon>
+        <input type="text" class="ft-name" id="new-name" placeholder="Namn på ny lista, t.ex. Inköp" />
+      </div>
+      <div class="ft-actions"><button id="new-create">Skapa lista</button></div>
+    `;
+    card.querySelector("#new-create").addEventListener("click", async () => {
+      const nameInput = card.querySelector("#new-name");
+      const name = nameInput.value.trim();
+      if (!name) return;
+      const { entry_id } = await this._hass.callWS({ type: "family_todo/create_list", name });
+      this._activeListId = entry_id;
+      await this._reloadLists();
+    });
+    return card;
+  }
+
+  _renderListCard(list) {
+    const items = this._items[list.entry_id] || [];
+    const card = document.createElement("div");
+    card.className = "ft-card";
+
+    const header = document.createElement("div");
+    header.className = "ft-card-header";
+    header.innerHTML = `<ha-icon icon="${list.icon || "mdi:format-list-checks"}"></ha-icon>
+      <input type="text" class="ft-name" value="${_esc(list.name)}" />`;
+    const nameInput = header.querySelector("input");
+    nameInput.addEventListener("change", async () => {
+      const name = nameInput.value.trim();
+      if (!name) return;
+      await this._hass.callWS({
+        type: "family_todo/update_list",
+        entry_id: list.entry_id,
+        name,
+        icon: list.icon,
+        color: list.color,
+      });
+      await this._reloadLists();
+    });
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "danger";
+    deleteBtn.textContent = "Ta bort lista";
+    deleteBtn.addEventListener("click", async () => {
+      if (!confirm(`Ta bort listan "${list.name}" och alla dess uppgifter?`)) return;
+      await this._hass.callWS({ type: "family_todo/delete_list", entry_id: list.entry_id });
+      this._activeListId = null;
+      await this._reloadLists();
+    });
+    header.appendChild(deleteBtn);
+    card.appendChild(header);
+
+    const addRow = document.createElement("div");
+    addRow.className = "ft-row";
+    addRow.innerHTML = `<input type="text" id="add-summary" placeholder="Ny uppgift..." />
+      <button id="add-btn">Lägg till</button>`;
+    const doAdd = async () => {
+      const input = addRow.querySelector("#add-summary");
+      const summary = input.value.trim();
+      if (!summary) return;
+      input.value = "";
+      await this._hass.callWS({ type: "family_todo/create_item", entry_id: list.entry_id, summary });
+      await this._reloadItems(list.entry_id);
+      this._render();
+    };
+    addRow.querySelector("#add-btn").addEventListener("click", doAdd);
+    addRow.querySelector("#add-summary").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doAdd();
+    });
+    card.appendChild(addRow);
+
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "ft-empty";
+      empty.textContent = "Inga uppgifter än.";
+      card.appendChild(empty);
+    }
+
+    for (const item of items) {
+      card.appendChild(this._renderItem(list, item));
+    }
+
+    return card;
+  }
+
+  _renderItem(list, item) {
+    const wrap = document.createElement("div");
+    wrap.className = "ft-item";
+    const done = item.status === "completed";
+
+    const row = document.createElement("div");
+    row.className = "ft-item-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = done;
+    checkbox.addEventListener("change", async () => {
+      await this._hass.callWS({
+        type: "family_todo/update_item",
+        entry_id: list.entry_id,
+        uid: item.uid,
+        summary: item.summary,
+        status: checkbox.checked ? "completed" : "needs_action",
+        description: item.description,
+        due: item.due,
+      });
+      await this._reloadItems(list.entry_id);
+      this._render();
+    });
+    row.appendChild(checkbox);
+
+    const summary = document.createElement("div");
+    summary.className = "ft-item-summary" + (done ? " done" : "");
+    summary.textContent = item.summary;
+    summary.title = "Klicka för att visa delsteg och tilldelning";
+    summary.addEventListener("click", () => {
+      this._openItems[item.uid] = !this._openItems[item.uid];
+      this._render();
+    });
+    row.appendChild(summary);
+
+    if (item.subtasks_total > 0) {
+      const badge = document.createElement("span");
+      badge.className = "ft-progress";
+      badge.textContent = `${item.subtasks_done}/${item.subtasks_total}`;
+      row.appendChild(badge);
+    }
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "text";
+    deleteBtn.innerHTML = `<ha-icon icon="mdi:delete-outline"></ha-icon>`;
+    deleteBtn.addEventListener("click", async () => {
+      await this._hass.callWS({ type: "family_todo/delete_item", entry_id: list.entry_id, uid: item.uid });
+      await this._reloadItems(list.entry_id);
+      this._render();
+    });
+    row.appendChild(deleteBtn);
+
+    wrap.appendChild(row);
+
+    if (item.assignee || item.due) {
+      const meta = document.createElement("div");
+      meta.className = "ft-item-meta";
+      if (item.assignee) meta.innerHTML += `<span><ha-icon icon="mdi:account"></ha-icon> ${_esc(item.assignee)}</span>`;
+      if (item.due) meta.innerHTML += `<span><ha-icon icon="mdi:calendar"></ha-icon> ${_esc(item.due)}</span>`;
+      wrap.appendChild(meta);
+    }
+
+    if (this._openItems[item.uid]) {
+      wrap.appendChild(this._renderItemDetail(list, item));
+    }
+
+    return wrap;
+  }
+
+  _renderItemDetail(list, item) {
+    const detail = document.createElement("div");
+    detail.className = "ft-item-detail";
+
+    const assigneeRow = document.createElement("div");
+    assigneeRow.className = "ft-row";
+    const select = document.createElement("select");
+    select.innerHTML = `<option value="">Ingen tilldelad</option>` +
+      this._persons.map((p) => `<option value="${_esc(p.name)}">${_esc(p.name)}</option>`).join("") +
+      `<option value="__custom__">Annat namn...</option>`;
+    const currentIsPerson = this._persons.some((p) => p.name === item.assignee);
+    if (item.assignee && !currentIsPerson) {
+      select.innerHTML += `<option value="${_esc(item.assignee)}" selected>${_esc(item.assignee)}</option>`;
+    } else {
+      select.value = item.assignee || "";
+    }
+    select.addEventListener("change", async () => {
+      let assignee = select.value;
+      if (assignee === "__custom__") {
+        assignee = prompt("Namn:", "") || "";
+      }
+      await this._hass.callWS({
+        type: "family_todo/set_item_extra",
+        entry_id: list.entry_id,
+        uid: item.uid,
+        assignee,
+      });
+      await this._reloadItems(list.entry_id);
+      this._render();
+    });
+    assigneeRow.innerHTML = `<span>Tilldelad:</span>`;
+    assigneeRow.appendChild(select);
+    detail.appendChild(assigneeRow);
+
+    const subtasksTitle = document.createElement("div");
+    subtasksTitle.className = "ft-row";
+    subtasksTitle.innerHTML = `<span>Delsteg:</span>`;
+    detail.appendChild(subtasksTitle);
+
+    const saveSubtasks = async (subtasks) => {
+      await this._hass.callWS({
+        type: "family_todo/set_item_extra",
+        entry_id: list.entry_id,
+        uid: item.uid,
+        subtasks,
+      });
+      await this._reloadItems(list.entry_id);
+      this._render();
+    };
+
+    for (const sub of item.subtasks) {
+      const subRow = document.createElement("div");
+      subRow.className = "ft-subtask-row";
+      const subCheckbox = document.createElement("input");
+      subCheckbox.type = "checkbox";
+      subCheckbox.checked = sub.complete;
+      subCheckbox.addEventListener("change", () => {
+        const updated = item.subtasks.map((s) =>
+          s.id === sub.id ? { ...s, complete: subCheckbox.checked } : s
+        );
+        saveSubtasks(updated);
+      });
+      subRow.appendChild(subCheckbox);
+      const subText = document.createElement("span");
+      subText.className = sub.complete ? "done" : "";
+      subText.textContent = sub.summary;
+      subRow.appendChild(subText);
+      const subDelete = document.createElement("button");
+      subDelete.className = "text";
+      subDelete.innerHTML = `<ha-icon icon="mdi:close"></ha-icon>`;
+      subDelete.addEventListener("click", () => {
+        saveSubtasks(item.subtasks.filter((s) => s.id !== sub.id));
+      });
+      subRow.appendChild(subDelete);
+      detail.appendChild(subRow);
+    }
+
+    const addSubRow = document.createElement("div");
+    addSubRow.className = "ft-row";
+    addSubRow.innerHTML = `<input type="text" placeholder="Nytt delsteg..." />`;
+    const addSubInput = addSubRow.querySelector("input");
+    const addSubBtn = document.createElement("button");
+    addSubBtn.className = "secondary";
+    addSubBtn.textContent = "Lägg till";
+    const doAddSub = () => {
+      const summary = addSubInput.value.trim();
+      if (!summary) return;
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      saveSubtasks([...item.subtasks, { id, summary, complete: false }]);
+    };
+    addSubBtn.addEventListener("click", doAddSub);
+    addSubInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doAddSub();
+    });
+    addSubRow.appendChild(addSubBtn);
+    detail.appendChild(addSubRow);
+
+    return detail;
+  }
+}
+
+function _esc(str) {
+  const div = document.createElement("div");
+  div.textContent = str == null ? "" : String(str);
+  return div.innerHTML;
+}
+
+customElements.define("family-todo-panel", FamilyTodoPanel);

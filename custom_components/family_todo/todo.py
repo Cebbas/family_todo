@@ -1,0 +1,137 @@
+"""The todo.* entity for a single Family Todo list."""
+from __future__ import annotations
+
+import logging
+
+from homeassistant.components.todo import (
+    TodoItem,
+    TodoItemStatus,
+    TodoListEntity,
+    TodoListEntityFeature,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DEFAULT_ICON, DOMAIN
+from .store import FamilyTodoStore, TodoItemData
+
+_LOGGER = logging.getLogger(__name__)
+
+_SUPPORTED_FEATURES = (
+    TodoListEntityFeature.CREATE_TODO_ITEM
+    | TodoListEntityFeature.UPDATE_TODO_ITEM
+    | TodoListEntityFeature.DELETE_TODO_ITEM
+    | TodoListEntityFeature.MOVE_TODO_ITEM
+    | TodoListEntityFeature.SET_DESCRIPTION_ON_ITEM
+    | TodoListEntityFeature.SET_DUE_DATE_ON_ITEM
+)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    store = FamilyTodoStore(hass, entry.entry_id)
+    await store.async_load()
+    entity = FamilyTodoListEntity(entry, store)
+    hass.data[DOMAIN][entry.entry_id]["entity"] = entity
+    async_add_entities([entity])
+
+
+class FamilyTodoListEntity(TodoListEntity):
+    """En familjelista, backad av en egen FamilyTodoStore.
+
+    Delsteg och tilldelning (`assignee`) är utökningsdata utanför HA:s
+    `todo`-schema - de lagras i samma store men rörs aldrig av
+    async_create/update/delete_todo_item, bara av sidopanelens
+    websocket-anrop (se ws_api.py). Det håller den vanliga
+    HA-todo-ytan (röstassistent, standardkortet) ren och förutsägbar.
+    """
+
+    _attr_has_entity_name = False
+    _attr_should_poll = False
+
+    def __init__(self, entry: ConfigEntry, store: FamilyTodoStore) -> None:
+        self._entry = entry
+        self._store = store
+        self._attr_unique_id = entry.entry_id
+        self._attr_name = entry.data.get(CONF_NAME, entry.title)
+        self._attr_icon = entry.data.get(CONF_ICON) or DEFAULT_ICON
+        self._attr_supported_features = _SUPPORTED_FEATURES
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {"color": self._entry.data.get(CONF_COLOR)}
+
+    def _model(self):
+        return self._store._data  # already loaded in async_setup_entry
+
+    @property
+    def todo_items(self) -> list[TodoItem]:
+        return [
+            TodoItem(
+                uid=item.uid,
+                summary=item.summary,
+                status=TodoItemStatus(item.status),
+                description=item.description,
+                due=_parse_due(item.due),
+            )
+            for item in self._model().items
+        ]
+
+    async def async_create_todo_item(self, item: TodoItem) -> None:
+        model = self._model()
+        model.add(
+            TodoItemData(
+                uid="",
+                summary=item.summary or "",
+                status=(item.status or TodoItemStatus.NEEDS_ACTION).value,
+                description=item.description,
+                due=item.due.isoformat() if item.due else None,
+            )
+        )
+        await self._store.async_save()
+        self.async_write_ha_state()
+
+    async def async_update_todo_item(self, item: TodoItem) -> None:
+        model = self._model()
+        model.update(
+            item.uid,
+            summary=item.summary,
+            status=(item.status or TodoItemStatus.NEEDS_ACTION).value,
+            description=item.description,
+            due=item.due.isoformat() if item.due else None,
+        )
+        await self._store.async_save()
+        self.async_write_ha_state()
+
+    async def async_delete_todo_items(self, uids: list[str]) -> None:
+        self._model().delete(uids)
+        await self._store.async_save()
+        self.async_write_ha_state()
+
+    async def async_move_todo_item(self, uid: str, previous_uid: str | None = None) -> None:
+        self._model().move(uid, previous_uid)
+        await self._store.async_save()
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id)
+        if entry_data is not None:
+            entry_data.pop("entity", None)
+
+
+def _parse_due(value: str | None):
+    if not value:
+        return None
+    from datetime import date, datetime
+
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        _LOGGER.warning("Kunde inte tolka due-värdet %r", value)
+        return None

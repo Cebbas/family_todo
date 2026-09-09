@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Skapa ny lista",
+        "description": "Family Todo skapar en riktig todo-lista som fungerar med Home Assistants eget todo-kort och röstassistent (Assist). Fler listor lägger du enklast till direkt i sidopanelen.",
+        "data": {
+          "name": "Namn",
+          "icon": "Ikon",
+          "color": "Färg"
+        }
+      }
+    },
+    "error": {
+      "name_required": "Namn krävs"
+    }
+  }
+}
