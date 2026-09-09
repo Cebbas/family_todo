@@ -144,7 +144,6 @@ custom_components/
     ws_api.py                       # websocket-kommandon som panelen använder
     const.py
     manifest.json
-    hacs.json
     strings.json
     translations/
       en.json
@@ -152,6 +151,7 @@ custom_components/
     www/
       family-todo-panel.js  # sidopanelens UI (vanilla JS)
 tests/               # pytest-svit (modell, entitet, ws-api)
+hacs.json            # måste ligga i repo-roten, inte under custom_components/, för HACS store-validering
 requirements_test.txt
 pytest.ini
 ```
