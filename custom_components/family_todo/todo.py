@@ -12,9 +12,10 @@ from homeassistant.components.todo import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DEFAULT_ICON, DOMAIN
-from .store import FamilyTodoStore, TodoItemData
+from .store import FamilyTodoStore, Subtask, TodoItemData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,13 +96,44 @@ class FamilyTodoListEntity(TodoListEntity):
 
     async def async_update_todo_item(self, item: TodoItem) -> None:
         model = self._model()
-        model.update(
-            item.uid,
-            summary=item.summary,
-            status=(item.status or TodoItemStatus.NEEDS_ACTION).value,
-            description=item.description,
-            due=item.due.isoformat() if item.due else None,
-        )
+        existing = model.get(item.uid)
+        new_status = (item.status or TodoItemStatus.NEEDS_ACTION).value
+        due = item.due.isoformat() if item.due else None
+
+        if (
+            existing is not None
+            and existing.recurrence is not None
+            and existing.status != TodoItemStatus.COMPLETED.value
+            and new_status == TodoItemStatus.COMPLETED.value
+        ):
+            # Återkommande uppgift avbockad: lämna den inte som klar, utan
+            # rulla den vidare till nästa tillfälle - nytt förfallodatum,
+            # tillbaka till "att göra", delsteg nollställda för den nya
+            # omgången. Gäller oavsett var avbockningen kom ifrån (panelen,
+            # röstassistenten, HA:s eget todo-kort) eftersom alla går via
+            # den här metoden.
+            today = dt_util.now().date()
+            base = _parse_due(existing.due) or today
+            if hasattr(base, "date"):
+                base = base.date()
+            next_due = existing.recurrence.next_date(base)
+            model.update(
+                item.uid,
+                summary=item.summary,
+                status=TodoItemStatus.NEEDS_ACTION.value,
+                description=item.description,
+                due=next_due.isoformat(),
+                last_completed=today.isoformat(),
+                subtasks=[Subtask(id=s.id, summary=s.summary, complete=False) for s in existing.subtasks],
+            )
+        else:
+            model.update(
+                item.uid,
+                summary=item.summary,
+                status=new_status,
+                description=item.description,
+                due=due,
+            )
         await self._store.async_save()
         self.async_write_ha_state()
 

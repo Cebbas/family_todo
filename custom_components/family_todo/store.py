@@ -19,17 +19,28 @@ area registry) so the panel can show the area's name/icon instead of
 asking for a name again. A section with no `area_id` is just a plain
 named group (e.g. "Den här veckan"); items with no `section_id` show up
 ungrouped rather than being forced into a section.
+
+Recurrence works differently from the other extension fields: checking
+off a recurring item doesn't leave it completed - todo.py intercepts that
+transition and instead rolls the item forward to its next occurrence
+(new `due`, status back to needs_action, subtasks reset). See
+FamilyTodoListEntity.async_update_todo_item.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 import uuid
+
+from dateutil.relativedelta import relativedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import STORAGE_KEY_PREFIX, STORAGE_VERSION
+
+RECURRENCE_UNITS = ("days", "weeks", "months")
 
 
 @dataclass
@@ -71,6 +82,25 @@ class Section:
 
 
 @dataclass
+class Recurrence:
+    """How often a task repeats, e.g. "every other week" (interval=2, unit="weeks")."""
+
+    interval: int
+    unit: str  # one of RECURRENCE_UNITS
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"interval": self.interval, "unit": self.unit}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Recurrence":
+        return cls(interval=int(data["interval"]), unit=data.get("unit", "weeks"))
+
+    def next_date(self, from_date: date) -> date:
+        """Nästa förfallodatum räknat från `from_date` (oftast förra förfallodatumet)."""
+        return from_date + relativedelta(**{self.unit: self.interval})
+
+
+@dataclass
 class TodoItemData:
     """A todo item plus the extension fields the HA `todo` platform can't hold."""
 
@@ -82,6 +112,8 @@ class TodoItemData:
     assignee: str | None = None
     subtasks: list[Subtask] = field(default_factory=list)
     section_id: str | None = None
+    recurrence: Recurrence | None = None
+    last_completed: str | None = None  # ISO date of the last time this was checked off
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,10 +125,13 @@ class TodoItemData:
             "assignee": self.assignee,
             "subtasks": [s.to_dict() for s in self.subtasks],
             "section_id": self.section_id,
+            "recurrence": self.recurrence.to_dict() if self.recurrence else None,
+            "last_completed": self.last_completed,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TodoItemData":
+        recurrence_data = data.get("recurrence")
         return cls(
             uid=data["uid"],
             summary=data["summary"],
@@ -106,6 +141,8 @@ class TodoItemData:
             assignee=data.get("assignee"),
             subtasks=[Subtask.from_dict(s) for s in data.get("subtasks", [])],
             section_id=data.get("section_id"),
+            recurrence=Recurrence.from_dict(recurrence_data) if recurrence_data else None,
+            last_completed=data.get("last_completed"),
         )
 
     @property

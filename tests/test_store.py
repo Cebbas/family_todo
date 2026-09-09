@@ -4,7 +4,9 @@ No `hass` needed - TodoListData/TodoItemData/Subtask have no Home
 Assistant dependency, only FamilyTodoStore (the persistence wrapper,
 untested here) does.
 """
-from custom_components.family_todo.store import Section, Subtask, TodoItemData, TodoListData
+from datetime import date
+
+from custom_components.family_todo.store import Recurrence, Section, Subtask, TodoItemData, TodoListData
 
 
 def _item(uid="a", summary="Handla mjölk", **kwargs):
@@ -180,3 +182,35 @@ def test_section_round_trip_through_dict():
     assert [s.name for s in restored.sections] == ["Kök"]
     assert restored.sections[0].area_id == "area.kok"
     assert restored.items[0].section_id == restored.sections[0].id
+
+
+# ---- recurrence ----
+
+def test_recurrence_next_date_weeks():
+    recurrence = Recurrence(interval=2, unit="weeks")
+    assert recurrence.next_date(date(2026, 9, 9)) == date(2026, 9, 23)
+
+
+def test_recurrence_next_date_days():
+    recurrence = Recurrence(interval=3, unit="days")
+    assert recurrence.next_date(date(2026, 9, 9)) == date(2026, 9, 12)
+
+
+def test_recurrence_next_date_months_clamps_short_month():
+    # 31 jan + 1 månad ska landa i februari, inte "31:e februari"
+    recurrence = Recurrence(interval=1, unit="months")
+    assert recurrence.next_date(date(2026, 1, 31)) == date(2026, 2, 28)
+
+
+def test_recurrence_round_trip_through_dict():
+    model = TodoListData()
+    model.add(_item(uid="", recurrence=Recurrence(interval=2, unit="weeks")))
+    restored = TodoListData.from_dict(model.to_dict())
+    assert restored.items[0].recurrence == Recurrence(interval=2, unit="weeks")
+
+
+def test_item_without_recurrence_round_trips_to_none():
+    model = TodoListData()
+    model.add(_item(uid=""))
+    restored = TodoListData.from_dict(model.to_dict())
+    assert restored.items[0].recurrence is None

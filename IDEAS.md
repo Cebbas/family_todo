@@ -15,17 +15,20 @@
 - [x] Sektioner inom en lista, valfritt kopplade till en HA-area (rum) –
   eller helt utan area-koppling för icke-rumsbaserade grupperingar. Att
   ta bort en sektion tar inte bort dess uppgifter, bara grupperingen.
+- [x] Återkommande uppgifter (t.ex. "Byt sängkläder" var 14:e dag): en
+  uppgift kan få ett intervall (N dagar/veckor/månader). Att bocka av den
+  – från panelen, HA:s eget todo-kort eller röstassistenten, alla går via
+  samma entitetsmetod – öppnar den igen automatiskt med förfallodatumet
+  framflyttat och ev. delsteg nollställda, istället för att lämna den
+  avklarad. Skiljer sig från övrig utökningsdata genom att den faktiskt
+  ändrar beteendet överallt, inte bara i panelen.
 
-## Sysslor/chores med tilldelning och rotation (ej påbörjat)
+## Sysslor/chores med tilldelning och rotation (delvis påbörjat)
 Ursprungligen ett alternativt scope för hela integrationen – landade
 istället som en idé att bygga ovanpå v0.1 istället för att vara grunden,
 för att inte låsa fast datamodellen i ett smalare användningsfall från
-början.
+början. Själva återkommande-delen är klar (se ovan); resten återstår.
 
-- [ ] Återkommande sysslor (t.ex. "Diska" varje dag, "Dammsuga" varje
-  vecka) som automatiskt dyker upp som en ny, oavbockad uppgift enligt
-  ett schema – snarare än att man manuellt lägger till samma uppgift om
-  och om igen
 - [ ] Rotation mellan flera personer – syslan tilldelas automatiskt nästa
   person i tur när den blivit avbockad/schemat går vidare, istället för
   att alltid ligga på samma tilldelade person
@@ -64,6 +67,9 @@ början.
   area-väljare (namn föreslås automatiskt från vald area) eller helt
   fritt namn. Uppgifter grupperas under sina sektioner plus en
   "Utan sektion"-grupp; listor utan sektioner visas fortfarande platt.
+- [x] Återkommande-växel i uppgiftens delstegs-/tilldelningsvy (på/av +
+  intervall + enhet), med en "🔁"-badge och nästa förfallodatum synligt
+  direkt i uppgiftsraden utan att behöva öppna den.
 - [ ] Drag-och-släpp för att ändra ordning på uppgifter (idag bara stöd
   i backend/entiteten via `async_move_todo_item`, inget UI för det i
   panelen än – ordningen syns som den lagras, men går bara att ändra via

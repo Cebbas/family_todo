@@ -4,11 +4,14 @@ Uses the entity directly (not through a full config entry setup) - `hass`
 and `entity_id` are set by hand, which is enough for `async_write_ha_state`
 to work without going through an entity platform.
 """
+from datetime import date
+
 from homeassistant.components.todo import TodoItem, TodoItemStatus
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.family_todo.const import DOMAIN
-from custom_components.family_todo.store import FamilyTodoStore
+from custom_components.family_todo.store import FamilyTodoStore, Recurrence, Subtask
 from custom_components.family_todo.todo import FamilyTodoListEntity
 
 
@@ -79,3 +82,86 @@ async def test_move_item_reorders(hass):
     await entity.async_move_todo_item(second_uid, None)
 
     assert [i.uid for i in entity.todo_items] == [second_uid, first_uid]
+
+
+# ---- recurrence: completing a recurring item rolls it forward instead ----
+
+async def test_completing_recurring_item_reopens_it_with_next_due_date(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Byta sängkläder"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, recurrence=Recurrence(interval=2, unit="weeks"), due="2026-09-09")
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Byta sängkläder", status=TodoItemStatus.COMPLETED)
+    )
+
+    item = entity._model().get(uid)
+    assert item.status == "needs_action"
+    assert item.due == "2026-09-23"
+
+
+async def test_completing_recurring_item_sets_last_completed(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Dammsuga"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, recurrence=Recurrence(interval=1, unit="weeks"))
+
+    await entity.async_update_todo_item(TodoItem(uid=uid, summary="Dammsuga", status=TodoItemStatus.COMPLETED))
+
+    assert entity._model().get(uid).last_completed == dt_util.now().date().isoformat()
+
+
+async def test_completing_recurring_item_resets_subtasks(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Städa badrum"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(
+        uid,
+        recurrence=Recurrence(interval=1, unit="weeks"),
+        subtasks=[Subtask("s1", "Skura golvet", complete=True), Subtask("s2", "Torka speglar", complete=True)],
+    )
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Städa badrum", status=TodoItemStatus.COMPLETED)
+    )
+
+    subtasks = entity._model().get(uid).subtasks
+    assert [s.complete for s in subtasks] == [False, False]
+    assert [s.summary for s in subtasks] == ["Skura golvet", "Torka speglar"]
+
+
+async def test_completing_item_without_recurrence_stays_completed(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Engångsuppgift"))
+    uid = entity.todo_items[0].uid
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Engångsuppgift", status=TodoItemStatus.COMPLETED)
+    )
+
+    assert entity._model().get(uid).status == "completed"
+
+
+async def test_uncompleting_recurring_item_does_not_roll_forward(hass):
+    # Bara övergången needs_action -> completed ska rulla vidare - att bocka
+    # UR en redan avklarad uppgift (ångra) ska bara öppna den igen som vanligt.
+    # Caller skickar (precis som ws_update_item/panelen alltid gör) hela
+    # itemet inklusive due, inte bara det ändrade fältet.
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Vattna blommor"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, recurrence=Recurrence(interval=1, unit="weeks"), status="completed", due="2026-09-09")
+
+    await entity.async_update_todo_item(
+        TodoItem(
+            uid=uid,
+            summary="Vattna blommor",
+            status=TodoItemStatus.NEEDS_ACTION,
+            due=date(2026, 9, 9),
+        )
+    )
+
+    item = entity._model().get(uid)
+    assert item.status == "needs_action"
+    assert item.due == "2026-09-09"

@@ -469,11 +469,18 @@ class FamilyTodoPanel extends HTMLElement {
 
     wrap.appendChild(row);
 
-    if (item.assignee || item.due) {
+    if (item.assignee || item.due || item.recurrence || item.last_completed) {
       const meta = document.createElement("div");
       meta.className = "ft-item-meta";
       if (item.assignee) meta.innerHTML += `<span><ha-icon icon="mdi:account"></ha-icon> ${_esc(item.assignee)}</span>`;
-      if (item.due) meta.innerHTML += `<span><ha-icon icon="mdi:calendar"></ha-icon> ${_esc(item.due)}</span>`;
+      if (item.due) {
+        const duePrefix = item.recurrence ? "Nästa: " : "";
+        meta.innerHTML += `<span><ha-icon icon="mdi:calendar"></ha-icon> ${duePrefix}${_esc(item.due)}</span>`;
+      }
+      if (item.recurrence)
+        meta.innerHTML += `<span><ha-icon icon="mdi:repeat"></ha-icon> ${_esc(_recurrenceLabel(item.recurrence))}</span>`;
+      if (item.last_completed)
+        meta.innerHTML += `<span><ha-icon icon="mdi:check"></ha-icon> Senast: ${_esc(item.last_completed)}</span>`;
       wrap.appendChild(meta);
     }
 
@@ -482,6 +489,64 @@ class FamilyTodoPanel extends HTMLElement {
     }
 
     return wrap;
+  }
+
+  _renderRecurrenceEditor(list, item) {
+    const row = document.createElement("div");
+    row.className = "ft-row";
+    const hasRecurrence = !!item.recurrence;
+
+    const label = document.createElement("label");
+    label.style.cssText = "display:flex;align-items:center;gap:6px;";
+    const enabledCb = document.createElement("input");
+    enabledCb.type = "checkbox";
+    enabledCb.checked = hasRecurrence;
+    label.appendChild(enabledCb);
+    label.append("Återkommande");
+    row.appendChild(label);
+
+    const intervalInput = document.createElement("input");
+    intervalInput.type = "number";
+    intervalInput.min = "1";
+    intervalInput.value = hasRecurrence ? item.recurrence.interval : 2;
+    intervalInput.style.cssText = "width:60px;min-width:60px;";
+    intervalInput.disabled = !hasRecurrence;
+    row.appendChild(intervalInput);
+
+    const unitSelect = document.createElement("select");
+    unitSelect.innerHTML = `
+      <option value="days">dagar</option>
+      <option value="weeks">veckor</option>
+      <option value="months">månader</option>
+    `;
+    unitSelect.value = hasRecurrence ? item.recurrence.unit : "weeks";
+    unitSelect.disabled = !hasRecurrence;
+    row.appendChild(unitSelect);
+
+    enabledCb.addEventListener("change", () => {
+      intervalInput.disabled = !enabledCb.checked;
+      unitSelect.disabled = !enabledCb.checked;
+    });
+
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "secondary";
+    saveBtn.textContent = "Spara";
+    saveBtn.addEventListener("click", async () => {
+      const recurrence = enabledCb.checked
+        ? { interval: Math.max(1, parseInt(intervalInput.value, 10) || 1), unit: unitSelect.value }
+        : null;
+      await this._hass.callWS({
+        type: "family_todo/set_item_extra",
+        entry_id: list.entry_id,
+        uid: item.uid,
+        recurrence,
+      });
+      await this._reloadItems(list.entry_id);
+      this._render();
+    });
+    row.appendChild(saveBtn);
+
+    return row;
   }
 
   _renderItemDetail(list, item) {
@@ -541,6 +606,8 @@ class FamilyTodoPanel extends HTMLElement {
     assigneeRow.innerHTML = `<span>Tilldelad:</span>`;
     assigneeRow.appendChild(select);
     detail.appendChild(assigneeRow);
+
+    detail.appendChild(this._renderRecurrenceEditor(list, item));
 
     const subtasksTitle = document.createElement("div");
     subtasksTitle.className = "ft-row";
@@ -613,6 +680,16 @@ function _esc(str) {
   const div = document.createElement("div");
   div.textContent = str == null ? "" : String(str);
   return div.innerHTML;
+}
+
+const _RECURRENCE_UNIT_WORDS = { days: "dag", weeks: "vecka", months: "månad" };
+
+function _recurrenceLabel(recurrence) {
+  if (!recurrence) return "";
+  const word = _RECURRENCE_UNIT_WORDS[recurrence.unit] || recurrence.unit;
+  if (recurrence.interval === 1) return `Varje ${word}`;
+  if (recurrence.interval === 2) return `Varannan ${word}`;
+  return `Var ${recurrence.interval}:e ${word}`;
 }
 
 customElements.define("family-todo-panel", FamilyTodoPanel);

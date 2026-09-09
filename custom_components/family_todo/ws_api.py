@@ -9,14 +9,20 @@ from homeassistant.components import websocket_api
 from homeassistant.components.todo import TodoItem, TodoItemStatus
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
+from homeassistant.util import dt as dt_util
 
 from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DOMAIN
-from .store import FamilyTodoStore, Section, Subtask
+from .store import RECURRENCE_UNITS, FamilyTodoStore, Recurrence, Section, Subtask
 
 SUBTASK_SCHEMA = {
     vol.Required("id"): str,
     vol.Required("summary"): str,
     vol.Optional("complete", default=False): bool,
+}
+
+RECURRENCE_SCHEMA = {
+    vol.Required("interval"): vol.All(int, vol.Range(min=1)),
+    vol.Required("unit"): vol.In(RECURRENCE_UNITS),
 }
 
 
@@ -42,6 +48,8 @@ def _item_to_dict(item) -> dict:
         "subtasks_done": done,
         "subtasks_total": total,
         "section_id": item.section_id,
+        "recurrence": item.recurrence.to_dict() if item.recurrence else None,
+        "last_completed": item.last_completed,
     }
 
 
@@ -165,6 +173,7 @@ async def ws_list_items(hass: HomeAssistant, connection, msg):
         vol.Optional("description"): vol.Any(str, None),
         vol.Optional("due"): vol.Any(str, None),
         vol.Optional("section_id"): vol.Any(str, None),
+        vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
     }
 )
 @websocket_api.async_response
@@ -174,23 +183,36 @@ async def ws_create_item(hass: HomeAssistant, connection, msg):
     if entity is None or store is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
+    recurrence = Recurrence.from_dict(msg["recurrence"]) if msg.get("recurrence") else None
+    due = _parse_due(msg.get("due"))
+    if recurrence is not None and due is None:
+        # Ingen förfallodag angiven för en ny återkommande uppgift - sätt
+        # första tillfället till "nu + intervallet" istället för att lämna
+        # den utan förfallodag (annars har rullnings-logiken i
+        # async_update_todo_item inget datum att räkna vidare från).
+        due = recurrence.next_date(dt_util.now().date())
     await entity.async_create_todo_item(
         TodoItem(
             summary=msg["summary"],
             status=TodoItemStatus.NEEDS_ACTION,
             description=msg.get("description"),
-            due=_parse_due(msg.get("due")),
+            due=due,
         )
     )
+    extra_changes: dict = {}
     if msg.get("section_id"):
+        extra_changes["section_id"] = msg["section_id"]
+    if recurrence is not None:
+        extra_changes["recurrence"] = recurrence
+    if extra_changes:
         # async_create_todo_item ovan har redan lagt till uppgiften sist i
-        # samma delade store/modell - sätt sektionen direkt istället för
-        # en extra rundtripp via klienten (samma modell som set_item_extra,
-        # men i samma anrop som skapandet för en smidigare "lägg till i
-        # den här sektionen"-flöde i panelen).
+        # samma delade store/modell - sätt utökningsfälten direkt istället
+        # för en extra rundtripp via klienten (samma modell som
+        # set_item_extra, men i samma anrop som skapandet för en smidigare
+        # "skapa direkt med sektion/upprepning"-flöde i panelen).
         model = await store.async_load()
         new_item = model.items[-1]
-        model.update(new_item.uid, section_id=msg["section_id"])
+        model.update(new_item.uid, **extra_changes)
         await store.async_save()
         entity.async_write_ha_state()
     connection.send_result(msg["id"], {"ok": True})
@@ -268,11 +290,12 @@ async def ws_move_item(hass: HomeAssistant, connection, msg):
         vol.Optional("assignee"): vol.Any(str, None),
         vol.Optional("subtasks"): [SUBTASK_SCHEMA],
         vol.Optional("section_id"): vol.Any(str, None),
+        vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
     }
 )
 @websocket_api.async_response
 async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
-    """Sparar delsteg, tilldelning och sektion - utökningsdata, se store.py.
+    """Sparar delsteg, tilldelning, sektion och upprepning - utökningsdata, se store.py.
 
     Rör aldrig summary/status/description/due (det gör create/update_item
     ovan) - bara de fält HA:s todo-schema inte har plats för.
@@ -290,6 +313,8 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
         changes["subtasks"] = [Subtask.from_dict(s) for s in msg["subtasks"]]
     if "section_id" in msg:
         changes["section_id"] = msg["section_id"]
+    if "recurrence" in msg:
+        changes["recurrence"] = Recurrence.from_dict(msg["recurrence"]) if msg["recurrence"] else None
     item = model.update(msg["uid"], **changes)
     if item is None:
         connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")

@@ -17,6 +17,11 @@ Skapar riktiga att-göra-listor i Home Assistant:
   till en av dina Home Assistant-**areor** (rum), t.ex. en "Städning"-lista
   med en sektion per rum. Sektioner utan area-koppling funkar också, för
   grupperingar som inte är rumsbaserade (t.ex. "Den här veckan")
+- markera en uppgift som **återkommande** (t.ex. "byt sängkläder var
+  14:e dag") – att bocka av den lämnar den inte som klar, utan flyttar
+  fram förfallodatumet till nästa tillfälle och öppnar den igen automatiskt,
+  oavsett om avbockningen skedde i panelen, HA:s eget todo-kort eller via
+  röstassistenten
 
 ## Känd begränsning: delsteg och tilldelning syns bara i panelen
 
@@ -88,6 +93,33 @@ Varje uppgift har:
 - **Delsteg** – valfri checklista, en rad per delsteg med egen
   avbockningsstatus (panelen)
 - **Sektion** – valfri gruppering inom listan (panelen), se nedan
+- **Återkommande** – valfritt upprepningsintervall (panelen), se nedan
+
+## Återkommande uppgifter
+
+Till skillnad från delsteg/tilldelning/sektion är återkommande uppgifter
+**inte** bara en panel-grej – de ändrar hur uppgiften faktiskt beter sig
+överallt, eftersom Family Todo lyssnar på samma avbockningsanrop oavsett
+varifrån det kommer.
+
+Slå på **"Återkommande"** i uppgiftens delstegs-/tilldelningsvy (klicka på
+uppgiften), välj ett intervall (t.ex. "2" + "veckor" för "varannan vecka",
+eller "1" + "dagar" för varje dag) och spara. Så fort uppgiften bockas av –
+i panelen, i HA:s eget todo-kort, eller genom att säga "checka av byta
+sängkläder" till röstassistenten – händer detta automatiskt istället för
+att den bara blir kvar som avklarad:
+
+1. Uppgiften öppnas igen (status tillbaka till "att göra")
+2. Förfallodatumet flyttas fram med intervallet, räknat från föregående
+   förfallodatum (eller från idag om inget fanns)
+3. Eventuella delsteg nollställs, så nästa omgång börjar med en tom
+   checklista
+4. Datumet du senast bockade av den sparas ("Senast: ...", synligt i
+   panelen)
+
+Att bocka **ur** en redan avklarad uppgift (ångra) rullar inte vidare –
+bara den faktiska övergången till "klar" gör det. Stäng av "Återkommande"
+igen för att göra uppgiften till en vanlig engångsuppgift.
 
 ## Sektioner
 
@@ -138,7 +170,7 @@ custom_components/
   family_todo/
     __init__.py      # setup, registrerar panel + ws-api, städar lagring vid borttag
     todo.py             # todo.*-entiteten per lista (CRUD, ordning)
-    store.py               # ren datamodell (TodoListData/TodoItemData/Section/Subtask) + HA-lagring
+    store.py               # ren datamodell (TodoListData/TodoItemData/Section/Subtask/Recurrence) + HA-lagring
     config_flow.py            # skapa ny lista (formulär, eller direkt från panelen)
     panel.py                     # registrerar sidopanelen + statiska filer
     ws_api.py                       # websocket-kommandon som panelen använder
