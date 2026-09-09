@@ -4,7 +4,7 @@ No `hass` needed - TodoListData/TodoItemData/Subtask have no Home
 Assistant dependency, only FamilyTodoStore (the persistence wrapper,
 untested here) does.
 """
-from custom_components.family_todo.store import Subtask, TodoItemData, TodoListData
+from custom_components.family_todo.store import Section, Subtask, TodoItemData, TodoListData
 
 
 def _item(uid="a", summary="Handla mjölk", **kwargs):
@@ -130,3 +130,53 @@ def test_from_dict_handles_missing_order_entries():
 def test_from_dict_none_returns_empty_model():
     model = TodoListData.from_dict(None)
     assert model.items == []
+
+
+# ---- sections ----
+
+def test_add_section_generates_id_when_missing():
+    model = TodoListData()
+    section = model.add_section(Section(id="", name="Kök", area_id="area.kok"))
+    assert section.id
+    assert model.get_section(section.id) is section
+
+
+def test_sections_preserves_insertion_order():
+    model = TodoListData()
+    model.add_section(Section(id="", name="Kök"))
+    model.add_section(Section(id="", name="Badrum"))
+    assert [s.name for s in model.sections] == ["Kök", "Badrum"]
+
+
+def test_update_section_changes_fields():
+    model = TodoListData()
+    section = model.add_section(Section(id="", name="Kök"))
+    model.update_section(section.id, name="Köket", area_id="area.kok")
+    updated = model.get_section(section.id)
+    assert updated.name == "Köket"
+    assert updated.area_id == "area.kok"
+
+
+def test_delete_section_unlinks_items_instead_of_deleting_them():
+    model = TodoListData()
+    section = model.add_section(Section(id="", name="Kök"))
+    item = model.add(_item(uid="", section_id=None))
+    model.update(item.uid, section_id=section.id)
+
+    model.delete_section(section.id)
+
+    assert model.get_section(section.id) is None
+    assert model.get(item.uid) is not None
+    assert model.get(item.uid).section_id is None
+
+
+def test_section_round_trip_through_dict():
+    model = TodoListData()
+    model.add_section(Section(id="", name="Kök", area_id="area.kok", icon="mdi:chef-hat"))
+    model.add(_item(uid="", section_id=model.sections[0].id))
+
+    restored = TodoListData.from_dict(model.to_dict())
+
+    assert [s.name for s in restored.sections] == ["Kök"]
+    assert restored.sections[0].area_id == "area.kok"
+    assert restored.items[0].section_id == restored.sections[0].id

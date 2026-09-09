@@ -12,6 +12,9 @@
 - [x] Delsteg (checklista) per uppgift – egen utökningsdata, se README
 - [x] Lagring städas bort när en lista tas bort (samma lärdom som
   cal_combiner redan dragit för sina egna kalendrar)
+- [x] Sektioner inom en lista, valfritt kopplade till en HA-area (rum) –
+  eller helt utan area-koppling för icke-rumsbaserade grupperingar. Att
+  ta bort en sektion tar inte bort dess uppgifter, bara grupperingen.
 
 ## Sysslor/chores med tilldelning och rotation (ej påbörjat)
 Ursprungligen ett alternativt scope för hela integrationen – landade
@@ -57,10 +60,18 @@ början.
 - [x] Flikar per lista + en "Ny lista"-flik
 - [x] Lägg till/bocka av/ta bort uppgifter direkt i panelen
 - [x] Klicka på en uppgift för att expandera delsteg + tilldelning
+- [x] Sektioner: skapa/döp om/ta bort direkt i listkortet, med
+  area-väljare (namn föreslås automatiskt från vald area) eller helt
+  fritt namn. Uppgifter grupperas under sina sektioner plus en
+  "Utan sektion"-grupp; listor utan sektioner visas fortfarande platt.
 - [ ] Drag-och-släpp för att ändra ordning på uppgifter (idag bara stöd
   i backend/entiteten via `async_move_todo_item`, inget UI för det i
   panelen än – ordningen syns som den lagras, men går bara att ändra via
   HA:s eget todo-kort om det stödjer drag-och-släpp)
+- [ ] Drag-och-släpp för att flytta en uppgift till en annan sektion
+  (idag bara via rullgardinen i uppgiftens delstegs-/tilldelningsvy)
+- [ ] Drag-och-släpp för att ändra ordning på sektionerna själva (idag
+  visas de i den ordning de skapades)
 - [ ] Filtrera/sortera uppgifter per tilldelad person i panelen
 
 ## Trevligt-att-ha (ej påbörjat)

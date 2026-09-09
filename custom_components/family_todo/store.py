@@ -7,11 +7,18 @@ wrapper that loads/saves that model through HA's own storage (`Store`),
 mirroring how cal_combiner's OwnCalendarStore separates "what the data
 looks like" from "where it's persisted".
 
-Subtasks and assignee are *not* part of the HA `todo` entity schema
-(`TodoItem` only has summary/status/description/due) - they're kept here
-as extension data alongside each item, uid-keyed, and are only ever read/
-written by the sidepanel via the websocket API. Home Assistant's own
+Subtasks, assignee and section are *not* part of the HA `todo` entity
+schema (`TodoItem` only has summary/status/description/due) - they're kept
+here as extension data alongside each item, uid-keyed, and are only ever
+read/written by the sidepanel via the websocket API. Home Assistant's own
 todo card, and voice assistants, only ever see the plain item.
+
+Sections ("delar") group items within a list - e.g. one per room - and
+may optionally point at a Home Assistant area (`area_id`, from HA's own
+area registry) so the panel can show the area's name/icon instead of
+asking for a name again. A section with no `area_id` is just a plain
+named group (e.g. "Den här veckan"); items with no `section_id` show up
+ungrouped rather than being forced into a section.
 """
 from __future__ import annotations
 
@@ -42,6 +49,28 @@ class Subtask:
 
 
 @dataclass
+class Section:
+    """A named group of items within a list, optionally tied to an HA area."""
+
+    id: str
+    name: str
+    area_id: str | None = None
+    icon: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "name": self.name, "area_id": self.area_id, "icon": self.icon}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Section":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            area_id=data.get("area_id"),
+            icon=data.get("icon"),
+        )
+
+
+@dataclass
 class TodoItemData:
     """A todo item plus the extension fields the HA `todo` platform can't hold."""
 
@@ -52,6 +81,7 @@ class TodoItemData:
     due: str | None = None  # ISO date or datetime string
     assignee: str | None = None
     subtasks: list[Subtask] = field(default_factory=list)
+    section_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +92,7 @@ class TodoItemData:
             "due": self.due,
             "assignee": self.assignee,
             "subtasks": [s.to_dict() for s in self.subtasks],
+            "section_id": self.section_id,
         }
 
     @classmethod
@@ -74,6 +105,7 @@ class TodoItemData:
             due=data.get("due"),
             assignee=data.get("assignee"),
             subtasks=[Subtask.from_dict(s) for s in data.get("subtasks", [])],
+            section_id=data.get("section_id"),
         )
 
     @property
@@ -86,16 +118,20 @@ class TodoItemData:
 
 
 class TodoListData:
-    """In-memory model for one list: an ordered collection of items."""
+    """In-memory model for one list: an ordered collection of items + sections."""
 
     def __init__(self, items: list[TodoItemData] | None = None) -> None:
         self._items: dict[str, TodoItemData] = {i.uid: i for i in (items or [])}
         self._order: list[str] = [i.uid for i in (items or [])]
+        self._sections: dict[str, Section] = {}
+        self._section_order: list[str] = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "items": {uid: item.to_dict() for uid, item in self._items.items()},
             "order": list(self._order),
+            "sections": {sid: section.to_dict() for sid, section in self._sections.items()},
+            "section_order": list(self._section_order),
         }
 
     @classmethod
@@ -108,9 +144,18 @@ class TodoListData:
         # Om ordningslistan tappat bort en uid (t.ex. korrupt data) - visa den
         # ändå, sist, hellre än att tyst döljas.
         order += [uid for uid in items_by_uid if uid not in order]
+
+        sections_by_id = {
+            sid: Section.from_dict(section_data) for sid, section_data in data.get("sections", {}).items()
+        }
+        section_order = [sid for sid in data.get("section_order", []) if sid in sections_by_id]
+        section_order += [sid for sid in sections_by_id if sid not in section_order]
+
         model = cls()
         model._items = items_by_uid
         model._order = order
+        model._sections = sections_by_id
+        model._section_order = section_order
         return model
 
     @property
@@ -155,6 +200,45 @@ class TodoListData:
                 self._order.append(uid)
             else:
                 self._order.insert(index + 1, uid)
+
+    # ---- sections ----
+
+    @property
+    def sections(self) -> list[Section]:
+        """Alla sektioner i sparad ordning."""
+        return [self._sections[sid] for sid in self._section_order]
+
+    def get_section(self, section_id: str) -> Section | None:
+        return self._sections.get(section_id)
+
+    def add_section(self, section: Section, *, section_id: str | None = None) -> Section:
+        if section_id is None:
+            section_id = uuid.uuid4().hex
+        section.id = section_id
+        self._sections[section_id] = section
+        self._section_order.append(section_id)
+        return section
+
+    def update_section(self, section_id: str, **changes: Any) -> Section | None:
+        section = self._sections.get(section_id)
+        if section is None:
+            return None
+        for key, value in changes.items():
+            setattr(section, key, value)
+        return section
+
+    def delete_section(self, section_id: str) -> None:
+        """Tar bort sektionen. Dess uppgifter tas INTE bort - de blir omärkta.
+
+        En bortagen sektion ska aldrig ta uppgifterna i den med sig - att
+        radera en gruppering är inte samma sak som att radera det som låg
+        i den.
+        """
+        self._sections.pop(section_id, None)
+        self._section_order = [sid for sid in self._section_order if sid != section_id]
+        for item in self._items.values():
+            if item.section_id == section_id:
+                item.section_id = None
 
 
 class FamilyTodoStore:

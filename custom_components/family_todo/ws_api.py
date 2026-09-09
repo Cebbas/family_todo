@@ -8,9 +8,10 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.components.todo import TodoItem, TodoItemStatus
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
 
 from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DOMAIN
-from .store import FamilyTodoStore, Subtask
+from .store import FamilyTodoStore, Section, Subtask
 
 SUBTASK_SCHEMA = {
     vol.Required("id"): str,
@@ -40,7 +41,12 @@ def _item_to_dict(item) -> dict:
         "subtasks": [s.to_dict() for s in item.subtasks],
         "subtasks_done": done,
         "subtasks_total": total,
+        "section_id": item.section_id,
     }
+
+
+def _section_to_dict(section) -> dict:
+    return {"id": section.id, "name": section.name, "area_id": section.area_id, "icon": section.icon}
 
 
 def _parse_due(value: str | None):
@@ -158,12 +164,14 @@ async def ws_list_items(hass: HomeAssistant, connection, msg):
         vol.Required("summary"): str,
         vol.Optional("description"): vol.Any(str, None),
         vol.Optional("due"): vol.Any(str, None),
+        vol.Optional("section_id"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
 async def ws_create_item(hass: HomeAssistant, connection, msg):
     entity = _get_entity(hass, msg["entry_id"])
-    if entity is None:
+    store = _get_store(hass, msg["entry_id"])
+    if entity is None or store is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
     await entity.async_create_todo_item(
@@ -174,6 +182,17 @@ async def ws_create_item(hass: HomeAssistant, connection, msg):
             due=_parse_due(msg.get("due")),
         )
     )
+    if msg.get("section_id"):
+        # async_create_todo_item ovan har redan lagt till uppgiften sist i
+        # samma delade store/modell - sätt sektionen direkt istället för
+        # en extra rundtripp via klienten (samma modell som set_item_extra,
+        # men i samma anrop som skapandet för en smidigare "lägg till i
+        # den här sektionen"-flöde i panelen).
+        model = await store.async_load()
+        new_item = model.items[-1]
+        model.update(new_item.uid, section_id=msg["section_id"])
+        await store.async_save()
+        entity.async_write_ha_state()
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -248,11 +267,12 @@ async def ws_move_item(hass: HomeAssistant, connection, msg):
         vol.Required("uid"): str,
         vol.Optional("assignee"): vol.Any(str, None),
         vol.Optional("subtasks"): [SUBTASK_SCHEMA],
+        vol.Optional("section_id"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
 async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
-    """Sparar delsteg och tilldelning - utökningsdata, se store.py.
+    """Sparar delsteg, tilldelning och sektion - utökningsdata, se store.py.
 
     Rör aldrig summary/status/description/due (det gör create/update_item
     ovan) - bara de fält HA:s todo-schema inte har plats för.
@@ -268,6 +288,8 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
         changes["assignee"] = msg["assignee"]
     if "subtasks" in msg:
         changes["subtasks"] = [Subtask.from_dict(s) for s in msg["subtasks"]]
+    if "section_id" in msg:
+        changes["section_id"] = msg["section_id"]
     item = model.update(msg["uid"], **changes)
     if item is None:
         connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")
@@ -275,6 +297,107 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
     await store.async_save()
     entity.async_write_ha_state()
     connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/list_sections", vol.Required("entry_id"): str}
+)
+@websocket_api.async_response
+async def ws_list_sections(hass: HomeAssistant, connection, msg):
+    store = _get_store(hass, msg["entry_id"])
+    if store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    model = await store.async_load()
+    connection.send_result(msg["id"], {"sections": [_section_to_dict(s) for s in model.sections]})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/create_section",
+        vol.Required("entry_id"): str,
+        vol.Required("name"): str,
+        vol.Optional("area_id"): vol.Any(str, None),
+        vol.Optional("icon"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_create_section(hass: HomeAssistant, connection, msg):
+    store = _get_store(hass, msg["entry_id"])
+    if store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    name = msg["name"].strip()
+    if not name:
+        connection.send_error(msg["id"], "invalid_input", "Namn krävs")
+        return
+    model = await store.async_load()
+    section = model.add_section(Section(id="", name=name, area_id=msg.get("area_id"), icon=msg.get("icon")))
+    await store.async_save()
+    connection.send_result(msg["id"], {"section": _section_to_dict(section)})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/update_section",
+        vol.Required("entry_id"): str,
+        vol.Required("section_id"): str,
+        vol.Required("name"): str,
+        vol.Optional("area_id"): vol.Any(str, None),
+        vol.Optional("icon"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_update_section(hass: HomeAssistant, connection, msg):
+    store = _get_store(hass, msg["entry_id"])
+    if store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    name = msg["name"].strip()
+    if not name:
+        connection.send_error(msg["id"], "invalid_input", "Namn krävs")
+        return
+    model = await store.async_load()
+    section = model.update_section(
+        msg["section_id"], name=name, area_id=msg.get("area_id"), icon=msg.get("icon")
+    )
+    if section is None:
+        connection.send_error(msg["id"], "not_found", "Sektionen hittades inte")
+        return
+    await store.async_save()
+    connection.send_result(msg["id"], {"section": _section_to_dict(section)})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/delete_section",
+        vol.Required("entry_id"): str,
+        vol.Required("section_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_delete_section(hass: HomeAssistant, connection, msg):
+    """Tar bort sektionen. Dess uppgifter tas inte bort - se Section.delete_section."""
+    store = _get_store(hass, msg["entry_id"])
+    if store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    model = await store.async_load()
+    model.delete_section(msg["section_id"])
+    await store.async_save()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_areas"})
+@websocket_api.async_response
+async def ws_list_areas(hass: HomeAssistant, connection, msg):
+    """HA:s egna areor (rum) - bekvämlighetslista för sektionens area-väljare."""
+    registry = ar.async_get(hass)
+    areas = [
+        {"area_id": area.id, "name": area.name, "icon": area.icon} for area in registry.async_list_areas()
+    ]
+    areas.sort(key=lambda a: a["name"])
+    connection.send_result(msg["id"], {"areas": areas})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_persons"})
@@ -304,4 +427,9 @@ def async_register_ws_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_delete_item)
     websocket_api.async_register_command(hass, ws_move_item)
     websocket_api.async_register_command(hass, ws_set_item_extra)
+    websocket_api.async_register_command(hass, ws_list_sections)
+    websocket_api.async_register_command(hass, ws_create_section)
+    websocket_api.async_register_command(hass, ws_update_section)
+    websocket_api.async_register_command(hass, ws_delete_section)
+    websocket_api.async_register_command(hass, ws_list_areas)
     websocket_api.async_register_command(hass, ws_list_persons)

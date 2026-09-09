@@ -8,9 +8,12 @@ class FamilyTodoPanel extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._lists = [];
     this._persons = [];
+    this._areas = [];
     this._items = {}; // entry_id -> items[]
+    this._sections = {}; // entry_id -> sections[]
     this._activeListId = null;
     this._openItems = {}; // uid -> bool (delsteg/tilldelning expanderat)
+    this._addingSection = false;
     this._initialized = false;
   }
 
@@ -80,6 +83,16 @@ class FamilyTodoPanel extends HTMLElement {
         .ft-empty { color: var(--secondary-text-color); font-size: 14px; padding: 12px 0; }
         .ft-progress { font-size: 11px; padding: 1px 6px; border-radius: 999px;
           background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); }
+        .ft-section { margin-top: 18px; }
+        .ft-section:first-of-type { margin-top: 8px; }
+        .ft-section-header { display: flex; align-items: center; gap: 8px; padding: 6px 0;
+          border-bottom: 1px solid var(--divider-color, #ddd); margin-bottom: 4px; }
+        .ft-section-header ha-icon { --mdc-icon-size: 18px; color: var(--secondary-text-color); }
+        .ft-section-header .ft-section-name { font-weight: 500; font-size: 13px; flex: 1;
+          color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: .02em; }
+        .ft-section-header button.text { padding: 2px 4px; }
+        .ft-section-add { border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; padding: 10px;
+          margin-top: 12px; }
       </style>
       <h1><ha-icon icon="mdi:format-list-checks"></ha-icon>Att göra</h1>
       <p class="subtitle">Skapa listor här - varje lista blir en riktig todo-lista i Home Assistant
@@ -92,12 +105,14 @@ class FamilyTodoPanel extends HTMLElement {
   }
 
   async _reloadLists() {
-    const [{ lists }, { persons }] = await Promise.all([
+    const [{ lists }, { persons }, { areas }] = await Promise.all([
       this._hass.callWS({ type: "family_todo/list_lists" }),
       this._hass.callWS({ type: "family_todo/list_persons" }),
+      this._hass.callWS({ type: "family_todo/list_areas" }),
     ]);
     this._lists = lists;
     this._persons = persons;
+    this._areas = areas;
     if (!this._activeListId || (this._activeListId !== "__new__" && !lists.find((l) => l.entry_id === this._activeListId))) {
       this._activeListId = lists.length ? lists[0].entry_id : "__new__";
     }
@@ -108,8 +123,17 @@ class FamilyTodoPanel extends HTMLElement {
   }
 
   async _reloadItems(entryId) {
-    const { items } = await this._hass.callWS({ type: "family_todo/list_items", entry_id: entryId });
+    const [{ items }, { sections }] = await Promise.all([
+      this._hass.callWS({ type: "family_todo/list_items", entry_id: entryId }),
+      this._hass.callWS({ type: "family_todo/list_sections", entry_id: entryId }),
+    ]);
     this._items[entryId] = items;
+    this._sections[entryId] = sections;
+  }
+
+  _areaIcon(areaId) {
+    const area = this._areas.find((a) => a.area_id === areaId);
+    return (area && area.icon) || "mdi:floor-plan";
   }
 
   _render() {
@@ -127,6 +151,7 @@ class FamilyTodoPanel extends HTMLElement {
       btn.append(list.name);
       btn.addEventListener("click", async () => {
         this._activeListId = list.entry_id;
+        this._addingSection = false;
         await this._reloadItems(list.entry_id);
         this._render();
       });
@@ -137,6 +162,7 @@ class FamilyTodoPanel extends HTMLElement {
     newBtn.innerHTML = `<ha-icon icon="mdi:plus"></ha-icon>Ny lista`;
     newBtn.addEventListener("click", () => {
       this._activeListId = "__new__";
+      this._addingSection = false;
       this._render();
     });
     tabs.appendChild(newBtn);
@@ -208,16 +234,28 @@ class FamilyTodoPanel extends HTMLElement {
     header.appendChild(deleteBtn);
     card.appendChild(header);
 
+    const sections = this._sections[list.entry_id] || [];
+
     const addRow = document.createElement("div");
     addRow.className = "ft-row";
+    const sectionOptions =
+      `<option value="">Ingen sektion</option>` +
+      sections.map((s) => `<option value="${_esc(s.id)}">${_esc(s.name)}</option>`).join("");
     addRow.innerHTML = `<input type="text" id="add-summary" placeholder="Ny uppgift..." />
+      ${sections.length ? `<select id="add-section">${sectionOptions}</select>` : ""}
       <button id="add-btn">Lägg till</button>`;
     const doAdd = async () => {
       const input = addRow.querySelector("#add-summary");
       const summary = input.value.trim();
       if (!summary) return;
+      const sectionSelect = addRow.querySelector("#add-section");
       input.value = "";
-      await this._hass.callWS({ type: "family_todo/create_item", entry_id: list.entry_id, summary });
+      await this._hass.callWS({
+        type: "family_todo/create_item",
+        entry_id: list.entry_id,
+        summary,
+        section_id: sectionSelect ? sectionSelect.value || null : null,
+      });
       await this._reloadItems(list.entry_id);
       this._render();
     };
@@ -227,18 +265,154 @@ class FamilyTodoPanel extends HTMLElement {
     });
     card.appendChild(addRow);
 
-    if (!items.length) {
+    if (!items.length && !sections.length) {
       const empty = document.createElement("div");
       empty.className = "ft-empty";
       empty.textContent = "Inga uppgifter än.";
       card.appendChild(empty);
     }
 
-    for (const item of items) {
-      card.appendChild(this._renderItem(list, item));
+    if (!sections.length) {
+      // Inga sektioner skapade - visa uppgifterna som en enkel platt lista,
+      // precis som innan sektioner fanns, istället för att tvinga fram en
+      // "Utan sektion"-rubrik ingen bett om.
+      for (const item of items) {
+        card.appendChild(this._renderItem(list, item));
+      }
+    } else {
+      for (const section of sections) {
+        card.appendChild(this._renderSectionGroup(list, section, items.filter((i) => i.section_id === section.id)));
+      }
+      const unsectioned = items.filter((i) => !i.section_id);
+      if (unsectioned.length) {
+        card.appendChild(this._renderSectionGroup(list, null, unsectioned));
+      }
     }
 
+    card.appendChild(this._renderSectionAdd(list));
+
     return card;
+  }
+
+  _renderSectionGroup(list, section, items) {
+    const group = document.createElement("div");
+    group.className = "ft-section";
+
+    const header = document.createElement("div");
+    header.className = "ft-section-header";
+    if (section) {
+      header.innerHTML = `<ha-icon icon="${section.icon || this._areaIcon(section.area_id)}"></ha-icon>
+        <span class="ft-section-name">${_esc(section.name)}</span>`;
+      const editBtn = document.createElement("button");
+      editBtn.className = "text";
+      editBtn.innerHTML = `<ha-icon icon="mdi:pencil-outline"></ha-icon>`;
+      editBtn.addEventListener("click", () => this._promptEditSection(list, section));
+      header.appendChild(editBtn);
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "text";
+      deleteBtn.innerHTML = `<ha-icon icon="mdi:delete-outline"></ha-icon>`;
+      deleteBtn.addEventListener("click", async () => {
+        if (!confirm(`Ta bort sektionen "${section.name}"? Uppgifterna i den tas inte bort.`)) return;
+        await this._hass.callWS({ type: "family_todo/delete_section", entry_id: list.entry_id, section_id: section.id });
+        await this._reloadItems(list.entry_id);
+        this._render();
+      });
+      header.appendChild(deleteBtn);
+    } else {
+      header.innerHTML = `<ha-icon icon="mdi:tray"></ha-icon><span class="ft-section-name">Utan sektion</span>`;
+    }
+    group.appendChild(header);
+
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "ft-empty";
+      empty.textContent = "Inga uppgifter här.";
+      group.appendChild(empty);
+    }
+    for (const item of items) {
+      group.appendChild(this._renderItem(list, item));
+    }
+    return group;
+  }
+
+  _renderSectionAdd(list) {
+    const wrap = document.createElement("div");
+    if (!this._addingSection) {
+      const btn = document.createElement("button");
+      btn.className = "secondary";
+      btn.innerHTML = `<ha-icon icon="mdi:plus"></ha-icon> Ny sektion`;
+      btn.style.marginTop = "12px";
+      btn.addEventListener("click", () => {
+        this._addingSection = true;
+        this._render();
+      });
+      wrap.appendChild(btn);
+      return wrap;
+    }
+
+    const box = document.createElement("div");
+    box.className = "ft-section-add";
+    const areaOptions =
+      `<option value="">Ingen area (fritt namn)</option>` +
+      this._areas.map((a) => `<option value="${_esc(a.area_id)}">${_esc(a.name)}</option>`).join("");
+    box.innerHTML = `
+      <div class="ft-row">
+        <input type="text" id="section-name" placeholder="Namn, t.ex. Kök" />
+        <select id="section-area">${areaOptions}</select>
+      </div>
+      <div class="ft-actions">
+        <button id="section-save">Skapa sektion</button>
+        <button id="section-cancel" class="secondary">Avbryt</button>
+      </div>
+    `;
+    const areaSelect = box.querySelector("#section-area");
+    const nameInput = box.querySelector("#section-name");
+    areaSelect.addEventListener("change", () => {
+      // Area vald: föreslå areans namn om användaren inte redan skrivit något eget.
+      if (!nameInput.value.trim()) {
+        const area = this._areas.find((a) => a.area_id === areaSelect.value);
+        if (area) nameInput.value = area.name;
+      }
+    });
+    box.querySelector("#section-cancel").addEventListener("click", () => {
+      this._addingSection = false;
+      this._render();
+    });
+    box.querySelector("#section-save").addEventListener("click", async () => {
+      const name = nameInput.value.trim();
+      if (!name) return;
+      await this._hass.callWS({
+        type: "family_todo/create_section",
+        entry_id: list.entry_id,
+        name,
+        area_id: areaSelect.value || null,
+      });
+      this._addingSection = false;
+      await this._reloadItems(list.entry_id);
+      this._render();
+    });
+    wrap.appendChild(box);
+    return wrap;
+  }
+
+  _promptEditSection(list, section) {
+    const name = prompt("Namn på sektionen:", section.name);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    this._hass
+      .callWS({
+        type: "family_todo/update_section",
+        entry_id: list.entry_id,
+        section_id: section.id,
+        name: trimmed,
+        area_id: section.area_id,
+        icon: section.icon,
+      })
+      .then(async () => {
+        await this._reloadItems(list.entry_id);
+        this._render();
+      });
   }
 
   _renderItem(list, item) {
@@ -313,6 +487,30 @@ class FamilyTodoPanel extends HTMLElement {
   _renderItemDetail(list, item) {
     const detail = document.createElement("div");
     detail.className = "ft-item-detail";
+
+    const sections = this._sections[list.entry_id] || [];
+    if (sections.length) {
+      const sectionRow = document.createElement("div");
+      sectionRow.className = "ft-row";
+      const sectionSelect = document.createElement("select");
+      sectionSelect.innerHTML =
+        `<option value="">Ingen sektion</option>` +
+        sections.map((s) => `<option value="${_esc(s.id)}">${_esc(s.name)}</option>`).join("");
+      sectionSelect.value = item.section_id || "";
+      sectionSelect.addEventListener("change", async () => {
+        await this._hass.callWS({
+          type: "family_todo/set_item_extra",
+          entry_id: list.entry_id,
+          uid: item.uid,
+          section_id: sectionSelect.value || null,
+        });
+        await this._reloadItems(list.entry_id);
+        this._render();
+      });
+      sectionRow.innerHTML = `<span>Sektion:</span>`;
+      sectionRow.appendChild(sectionSelect);
+      detail.appendChild(sectionRow);
+    }
 
     const assigneeRow = document.createElement("div");
     assigneeRow.className = "ft-row";

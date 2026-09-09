@@ -13,6 +13,10 @@ Skapar riktiga att-göra-listor i Home Assistant:
   delsteg** – praktiskt för uppgifter som "Städa vardagsrummet" (dammsug,
   dammtorka, dammsug soffan) där du vill bocka av delar av jobbet, inte
   bara hela uppgiften på en gång
+- gruppera uppgifter i **sektioner** inom en lista – valfritt kopplade
+  till en av dina Home Assistant-**areor** (rum), t.ex. en "Städning"-lista
+  med en sektion per rum. Sektioner utan area-koppling funkar också, för
+  grupperingar som inte är rumsbaserade (t.ex. "Den här veckan")
 
 ## Känd begränsning: delsteg och tilldelning syns bara i panelen
 
@@ -21,8 +25,12 @@ eller tilldelad person – ett todo-item har bara titel, status (klar/inte
 klar), beskrivning och förfallodatum. Den begränsningen finns i HA själv,
 inte något Family Todo kan runda.
 
-Family Todo löser det genom att lagra delsteg och tilldelning som egen
-utökningsdata vid sidan av, kopplad till uppgiftens id. Det betyder:
+Samma begränsning gäller sektioner (se nedan) – de är inte heller ett
+begrepp i HA:s `todo`-schema.
+
+Family Todo löser det genom att lagra delsteg, tilldelning och sektion
+som egen utökningsdata vid sidan av, kopplad till uppgiftens id. Det
+betyder:
 
 - **I sidopanelen**: full funktionalitet – lägg till/bocka av delsteg,
   välj tilldelad person, se hur många delsteg som är klara.
@@ -79,11 +87,34 @@ Varje uppgift har:
   `person.*`-entiteter på din HA-instans (panelen)
 - **Delsteg** – valfri checklista, en rad per delsteg med egen
   avbockningsstatus (panelen)
+- **Sektion** – valfri gruppering inom listan (panelen), se nedan
+
+## Sektioner
+
+En sektion är en namngiven gruppering av uppgifter inom en lista, t.ex.
+ett rum. Skapa en under fliken **"Ny sektion"** längst ner i listkortet:
+
+- **Kopplad till en area**: välj ett rum ur rullgardinen (hämtas från
+  Home Assistants egna areor, Inställningar → Områden & zoner) –
+  sektionens namn föreslås automatiskt från arean, och den visas med
+  areans ikon om den har en
+- **Utan area-koppling**: lämna rullgardinen på "Ingen area" och skriv
+  vilket namn som helst, t.ex. "Den här veckan" eller "Inför resan" – för
+  grupperingar som inte handlar om ett rum
+
+Nya uppgifter läggs till i en vald sektion direkt via rullgardinen bredvid
+"Lägg till"-fältet, och en befintlig uppgift kan flyttas mellan sektioner
+(eller till "Ingen sektion") i uppgiftens delstegs-/tilldelningsvy. Har
+listan inga sektioner än visas uppgifterna som en enkel platt lista, precis
+som innan sektioner fanns.
+
+Tar du bort en sektion tas bara grupperingen bort – uppgifterna i den
+finns kvar, bara omärkta ("Utan sektion").
 
 ## Tester
 
-Modell-/entitetslogik (listmodell, CRUD, ordning, delstegs-räkning) täcks
-av en pytest-svit under `tests/`, byggd på
+Modell-/entitetslogik (listmodell, sektioner, CRUD, ordning,
+delstegs-räkning) täcks av en pytest-svit under `tests/`, byggd på
 `pytest-homeassistant-custom-component`. Köra lokalt:
 
 ```bash
@@ -107,7 +138,7 @@ custom_components/
   family_todo/
     __init__.py      # setup, registrerar panel + ws-api, städar lagring vid borttag
     todo.py             # todo.*-entiteten per lista (CRUD, ordning)
-    store.py               # ren datamodell (TodoListData/TodoItemData/Subtask) + HA-lagring
+    store.py               # ren datamodell (TodoListData/TodoItemData/Section/Subtask) + HA-lagring
     config_flow.py            # skapa ny lista (formulär, eller direkt från panelen)
     panel.py                     # registrerar sidopanelen + statiska filer
     ws_api.py                       # websocket-kommandon som panelen använder
@@ -120,7 +151,7 @@ custom_components/
       sv.json
     www/
       family-todo-panel.js  # sidopanelens UI (vanilla JS)
-tests/               # pytest-svit (modell, entitet)
+tests/               # pytest-svit (modell, entitet, ws-api)
 requirements_test.txt
 pytest.ini
 ```
