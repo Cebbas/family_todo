@@ -143,6 +143,55 @@ async def test_completing_item_without_recurrence_stays_completed(hass):
     assert entity._model().get(uid).status == "completed"
 
 
+# ---- description mirrors assignee/delsteg for HA's own todo card/voice ----
+
+async def test_update_item_mirrors_assignee_into_description(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Handla"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, assignee="Anna")
+
+    await entity.async_update_todo_item(TodoItem(uid=uid, summary="Handla mat", status=TodoItemStatus.NEEDS_ACTION))
+
+    assert "👤 Anna" in entity.todo_items[0].description
+
+
+async def test_update_item_preserves_users_own_description_text(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Handla"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, assignee="Anna")
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Handla", status=TodoItemStatus.NEEDS_ACTION, description="Glöm inte kvittot")
+    )
+
+    description = entity.todo_items[0].description
+    assert description.startswith("Glöm inte kvittot")
+    assert "👤 Anna" in description
+
+
+async def test_update_item_does_not_duplicate_meta_block_on_repeated_saves(hass):
+    # HA:s eget redigeringsläge skickar tillbaka hela description-fältet
+    # oförändrat (inklusive vårt block) varje gång - ska aldrig staplas.
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Handla"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, assignee="Anna")
+
+    for _ in range(3):
+        await entity.async_update_todo_item(
+            TodoItem(
+                uid=uid,
+                summary="Handla",
+                status=TodoItemStatus.NEEDS_ACTION,
+                description=entity.todo_items[0].description,
+            )
+        )
+
+    assert entity.todo_items[0].description.count("Family Todo") == 1
+
+
 async def test_uncompleting_recurring_item_does_not_roll_forward(hass):
     # Bara övergången needs_action -> completed ska rulla vidare - att bocka
     # UR en redan avklarad uppgift (ångra) ska bara öppna den igen som vanligt.

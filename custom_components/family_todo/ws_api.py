@@ -12,7 +12,15 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DOMAIN
-from .store import RECURRENCE_UNITS, FamilyTodoStore, Recurrence, Section, Subtask
+from .store import (
+    RECURRENCE_UNITS,
+    FamilyTodoStore,
+    Recurrence,
+    Section,
+    Subtask,
+    combine_description,
+    split_description,
+)
 
 SUBTASK_SCHEMA = {
     vol.Required("id"): str,
@@ -41,7 +49,11 @@ def _item_to_dict(item) -> dict:
         "uid": item.uid,
         "summary": item.summary,
         "status": item.status,
-        "description": item.description,
+        # Utan vårt auto-genererade tilldelnings-/delsteg-block (se
+        # split_description/combine_description i store.py) - panelen har
+        # redan den datan strukturerat via assignee/subtasks_* nedan och
+        # ska aldrig visa eller skicka tillbaka blocket som fritext.
+        "description": split_description(item.description),
         "due": item.due,
         "assignee": item.assignee,
         "subtasks": [s.to_dict() for s in item.subtasks],
@@ -297,8 +309,10 @@ async def ws_move_item(hass: HomeAssistant, connection, msg):
 async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
     """Sparar delsteg, tilldelning, sektion och upprepning - utökningsdata, se store.py.
 
-    Rör aldrig summary/status/description/due (det gör create/update_item
-    ovan) - bara de fält HA:s todo-schema inte har plats för.
+    Rör aldrig summary/status/due (det gör create/update_item ovan) - bara
+    de fält HA:s todo-schema inte har plats för. description uppdateras
+    dock indirekt när assignee/subtasks ändras, för att hålla
+    sammanfattningsblocket i den fältet aktuellt (se combine_description).
     """
     store = _get_store(hass, msg["entry_id"])
     entity = _get_entity(hass, msg["entry_id"])
@@ -306,6 +320,10 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
     model = await store.async_load()
+    item = model.get(msg["uid"])
+    if item is None:
+        connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")
+        return
     changes: dict = {}
     if "assignee" in msg:
         changes["assignee"] = msg["assignee"]
@@ -315,10 +333,16 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
         changes["section_id"] = msg["section_id"]
     if "recurrence" in msg:
         changes["recurrence"] = Recurrence.from_dict(msg["recurrence"]) if msg["recurrence"] else None
-    item = model.update(msg["uid"], **changes)
-    if item is None:
-        connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")
-        return
+    if "assignee" in changes or "subtasks" in changes:
+        # Håll description-sammanfattningen (syns i HA:s eget todo-kort
+        # och för röstassistenten) i synk med den nya tilldelningen/
+        # delstegen - se combine_description i store.py.
+        new_assignee = changes.get("assignee", item.assignee)
+        new_subtasks = changes.get("subtasks", item.subtasks)
+        changes["description"] = combine_description(
+            split_description(item.description), new_assignee, new_subtasks
+        )
+    model.update(msg["uid"], **changes)
     await store.async_save()
     entity.async_write_ha_state()
     connection.send_result(msg["id"], {"ok": True})

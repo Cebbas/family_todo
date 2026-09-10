@@ -41,17 +41,18 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
 - [ ] Notis/påminnelse när en syssla inte är avbockad vid en viss tid
 
 ## Synlighet för delsteg/tilldelning utanför panelen
-- [ ] Skriva in en sammanfattning av delstegsstatus ("2/5 delsteg klara")
-  i uppgiftens `description`-fält vid varje ändring, så det syns även i
-  HA:s eget todo-kort och röstassistenten – **medvetet inte gjort i v0.1**
-  eftersom det skulle skriva över/blanda ihop med en beskrivning
-  användaren själv skrivit i det fältet. Kräver ett sätt att skilja
-  "vår auto-genererade rad" från användarens egen text (t.ex. en tydlig
-  markör-rad) innan det är säkert att göra automatiskt.
-- [ ] Motsvarande för tilldelad person – t.ex. som prefix i titeln
-  ("[Anna] Handla mjölk") om man vill se tilldelningen även i det vanliga
-  todo-kortet, med samma varning som ovan om att inte skriva över
-  användarens egen text oavsiktligt.
+- [x] Skriva in en sammanfattning av delstegsstatus ("2/5 delsteg klara")
+  och tilldelad person i uppgiftens `description`-fält vid varje ändring,
+  så det syns även i HA:s eget todo-kort och röstassistenten. Löst utan
+  att blanda ihop med användarens egen text genom en markör-rad
+  (`⸻ Family Todo ⸻`) som alltid går att hitta och ersätta - se
+  `combine_description`/`split_description` i store.py.
+  Panelen visar/redigerar bara den rena användartexten
+  (`split_description`, används i `_item_to_dict`); det fulla fältet med
+  blocket är bara det HA:s todo-schema (och därmed röstassistenten och
+  standardkortet) faktiskt ser. Löste även idén nedan om prefix i
+  titeln för tilldelad person - samma block täcker båda behoven, så ett
+  extra titel-prefix bedömdes onödigt.
 
 ## Robusthet
 - [ ] Repair-issue om en listas lagringsfil är korrupt, istället för att

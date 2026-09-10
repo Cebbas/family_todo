@@ -10,8 +10,11 @@ looks like" from "where it's persisted".
 Subtasks, assignee and section are *not* part of the HA `todo` entity
 schema (`TodoItem` only has summary/status/description/due) - they're kept
 here as extension data alongside each item, uid-keyed, and are only ever
-read/written by the sidepanel via the websocket API. Home Assistant's own
-todo card, and voice assistants, only ever see the plain item.
+read/written by the sidepanel via the websocket API. A summary of them
+(assignee + delsteg-status) is mirrored into the item's own
+`description` field though, via `combine_description`/
+`split_description` below, so HA's own todo card and voice assistants
+also get to see it - just not the full structured data.
 
 Sections ("delar") group items within a list - e.g. one per room - and
 may optionally point at a Home Assistant area (`area_id`, from HA's own
@@ -152,6 +155,53 @@ class TodoItemData:
             return (0, 0)
         done = sum(1 for s in self.subtasks if s.complete)
         return (done, len(self.subtasks))
+
+
+# Markerar var vår auto-genererade sammanfattning börjar i `description`
+# (se split_description/combine_description) - ett stycke ingen användare
+# rimligen skriver av misstag, så det alltid går att hitta och ersätta
+# hela blocket istället för att råka duplicera eller blanda ihop det med
+# användarens egen text.
+_META_MARKER = "⸻ Family Todo ⸻"
+
+
+def split_description(description: str | None) -> str:
+    """Den del av `description` användaren själv skrivit, utan vårt auto-block.
+
+    Panelen visar/redigerar bara den här delen - se `combine_description`
+    för själva blocket med tilldelning/delsteg-status som visas i HA:s
+    vanliga todo-kort och för röstassistenten (se IDEAS.md "Synlighet för
+    delsteg/tilldelning utanför panelen").
+    """
+    if not description:
+        return ""
+    idx = description.find(_META_MARKER)
+    return description[:idx].rstrip("\n") if idx != -1 else description
+
+
+def combine_description(
+    user_text: str | None, assignee: str | None, subtasks: list[Subtask]
+) -> str | None:
+    """Lägger till en auto-genererad rad för tilldelning/delsteg-status i `description`.
+
+    Ersätter alltid ett ev. redan befintligt block (hittat via
+    `_META_MARKER`) istället för att lägga till ett nytt, så upprepade
+    anrop (varje gång tilldelning eller delsteg ändras) inte duplicerar
+    raden. `user_text` ska redan vara körd genom `split_description` om
+    den kan innehålla ett gammalt block (t.ex. en beskrivning som kommer
+    tillbaka oförändrad från HA:s eget redigeringsläge).
+    """
+    user_text = (user_text or "").rstrip("\n")
+    meta_lines = []
+    if assignee:
+        meta_lines.append(f"👤 {assignee}")
+    if subtasks:
+        done = sum(1 for s in subtasks if s.complete)
+        meta_lines.append(f"☑️ {done}/{len(subtasks)} delsteg klara")
+    if not meta_lines:
+        return user_text or None
+    meta_block = _META_MARKER + "\n" + "\n".join(meta_lines)
+    return f"{user_text}\n\n{meta_block}" if user_text else meta_block
 
 
 class TodoListData:

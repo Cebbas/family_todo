@@ -15,7 +15,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DEFAULT_ICON, DOMAIN
-from .store import FamilyTodoStore, Subtask, TodoItemData
+from .store import FamilyTodoStore, Subtask, TodoItemData, combine_description, split_description
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,10 +43,12 @@ class FamilyTodoListEntity(TodoListEntity):
     """En familjelista, backad av en egen FamilyTodoStore.
 
     Delsteg och tilldelning (`assignee`) är utökningsdata utanför HA:s
-    `todo`-schema - de lagras i samma store men rörs aldrig av
+    `todo`-schema - de lagras i samma store men fälten rörs aldrig av
     async_create/update/delete_todo_item, bara av sidopanelens
-    websocket-anrop (se ws_api.py). Det håller den vanliga
-    HA-todo-ytan (röstassistent, standardkortet) ren och förutsägbar.
+    websocket-anrop (se ws_api.py). En sammanfattning av dem speglas dock
+    in i `description` (se combine_description/split_description i
+    store.py), så den vanliga HA-todo-ytan (röstassistent, standardkortet)
+    ändå får se tilldelning och delsteg-status, inte bara ren text.
     """
 
     _attr_has_entity_name = False
@@ -99,6 +101,12 @@ class FamilyTodoListEntity(TodoListEntity):
         existing = model.get(item.uid)
         new_status = (item.status or TodoItemStatus.NEEDS_ACTION).value
         due = item.due.isoformat() if item.due else None
+        # split_description tar bort ett ev. redan befintligt tilldelnings-/
+        # delsteg-block innan vi bygger ett nytt (se store.py) - annars
+        # skulle t.ex. HA:s eget redigeringsläge, som skickar tillbaka hela
+        # description-fältet oförändrat, gradvis duplicera blocket.
+        user_text = split_description(item.description)
+        assignee = existing.assignee if existing else None
 
         if (
             existing is not None
@@ -117,21 +125,23 @@ class FamilyTodoListEntity(TodoListEntity):
             if hasattr(base, "date"):
                 base = base.date()
             next_due = existing.recurrence.next_date(base)
+            reset_subtasks = [Subtask(id=s.id, summary=s.summary, complete=False) for s in existing.subtasks]
             model.update(
                 item.uid,
                 summary=item.summary,
                 status=TodoItemStatus.NEEDS_ACTION.value,
-                description=item.description,
+                description=combine_description(user_text, assignee, reset_subtasks),
                 due=next_due.isoformat(),
                 last_completed=today.isoformat(),
-                subtasks=[Subtask(id=s.id, summary=s.summary, complete=False) for s in existing.subtasks],
+                subtasks=reset_subtasks,
             )
         else:
+            subtasks = existing.subtasks if existing else []
             model.update(
                 item.uid,
                 summary=item.summary,
                 status=new_status,
-                description=item.description,
+                description=combine_description(user_text, assignee, subtasks),
                 due=due,
             )
         await self._store.async_save()

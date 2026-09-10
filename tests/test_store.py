@@ -6,7 +6,15 @@ untested here) does.
 """
 from datetime import date
 
-from custom_components.family_todo.store import Recurrence, Section, Subtask, TodoItemData, TodoListData
+from custom_components.family_todo.store import (
+    Recurrence,
+    Section,
+    Subtask,
+    TodoItemData,
+    TodoListData,
+    combine_description,
+    split_description,
+)
 
 
 def _item(uid="a", summary="Handla mjölk", **kwargs):
@@ -214,3 +222,55 @@ def test_item_without_recurrence_round_trips_to_none():
     model.add(_item(uid=""))
     restored = TodoListData.from_dict(model.to_dict())
     assert restored.items[0].recurrence is None
+
+
+# ---- description meta block (assignee/delsteg synligt utanför panelen) ----
+
+def test_combine_description_appends_assignee():
+    result = combine_description("Handla mjölk och bröd", "Anna", [])
+    assert result == "Handla mjölk och bröd\n\n⸻ Family Todo ⸻\n👤 Anna"
+
+
+def test_combine_description_appends_subtask_progress():
+    subtasks = [Subtask("s1", "Mjölk", complete=True), Subtask("s2", "Bröd", complete=False)]
+    result = combine_description("", None, subtasks)
+    assert result == "⸻ Family Todo ⸻\n☑️ 1/2 delsteg klara"
+
+
+def test_combine_description_with_assignee_and_subtasks():
+    subtasks = [Subtask("s1", "Mjölk", complete=True)]
+    result = combine_description(None, "Anna", subtasks)
+    assert result == "⸻ Family Todo ⸻\n👤 Anna\n☑️ 1/1 delsteg klara"
+
+
+def test_combine_description_without_assignee_or_subtasks_returns_plain_text():
+    assert combine_description("Bara en vanlig text", None, []) == "Bara en vanlig text"
+
+
+def test_combine_description_with_nothing_at_all_returns_none():
+    assert combine_description("", None, []) is None
+    assert combine_description(None, None, []) is None
+
+
+def test_split_description_removes_meta_block():
+    full = combine_description("Handla mjölk", "Anna", [Subtask("s1", "x", complete=False)])
+    assert split_description(full) == "Handla mjölk"
+
+
+def test_split_description_without_meta_block_returns_text_unchanged():
+    assert split_description("Bara en vanlig text") == "Bara en vanlig text"
+
+
+def test_split_description_handles_none():
+    assert split_description(None) == ""
+
+
+def test_combine_then_split_round_trips_and_never_duplicates_on_repeated_calls():
+    # Simulerar att panelen/HA:s eget redigeringsläge skickar tillbaka
+    # samma description flera gånger i rad - blocket ska ersättas, aldrig
+    # staplas på sig självt.
+    description = combine_description("Städa", "Anna", [Subtask("s1", "x", complete=False)])
+    for _ in range(3):
+        description = combine_description(split_description(description), "Anna", [Subtask("s1", "x", complete=True)])
+    assert description.count("⸻ Family Todo ⸻") == 1
+    assert description == "Städa\n\n⸻ Family Todo ⸻\n👤 Anna\n☑️ 1/1 delsteg klara"
