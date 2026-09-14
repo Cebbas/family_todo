@@ -22,6 +22,13 @@
   framflyttat och ev. delsteg nollställda, istället för att lämna den
   avklarad. Skiljer sig från övrig utökningsdata genom att den faktiskt
   ändrar beteendet överallt, inte bara i panelen.
+- [x] Påminnelser: en uppgift med tid (inte bara datum) på förfallodatumet
+  skickar en mobilpush till den tilldelade personen om den fortfarande
+  inte är avbockad när tiden är inne - en gång, via en person -> notify.*-
+  mappning konfigurerad under panelens Notiser-tabb (notify_map.py) och en
+  60-sekunders bakgrundskoll (reminders.py). Bredare i scope än ursprungs-
+  idén nedan under Sysslor - gäller alla uppgifter med tid, inte bara
+  återkommande sysslor.
 
 ## Sysslor/chores med tilldelning och rotation (delvis påbörjat)
 Ursprungligen ett alternativt scope för hela integrationen – landade
@@ -38,7 +45,9 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
 - [ ] Ett eget vy-läge i panelen (eller ett separat kort) som visar
   "veckans sysslor" grupperat per person, istället för dagens
   lista-per-lista-vy
-- [ ] Notis/påminnelse när en syssla inte är avbockad vid en viss tid
+- [x] ~~Notis/påminnelse när en syssla inte är avbockad vid en viss tid~~ -
+  löst bredare, för alla uppgifter, se "Påminnelser" ovan under
+  Grundfunktioner
 
 ## Synlighet för delsteg/tilldelning utanför panelen
 - [x] Skriva in en sammanfattning av delstegsstatus ("2/5 delsteg klara")

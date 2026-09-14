@@ -9,6 +9,7 @@ from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN, PLATFORMS
 from .panel import async_register_panel
+from .reminders import async_setup_reminders
 from .store import FamilyTodoStore
 from .ws_api import async_register_ws_api
 
@@ -20,8 +21,10 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    hass.data.setdefault(DOMAIN, {})
     async_register_ws_api(hass)
     await async_register_panel(hass)
+    async_setup_reminders(hass)
     return True
 
 

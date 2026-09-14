@@ -126,6 +126,21 @@ def test_to_dict_from_dict_round_trip():
     assert item.subtask_progress == (1, 2)
 
 
+def test_reminder_sent_defaults_false_and_round_trips_through_dict():
+    model = TodoListData()
+    model.add(_item(uid="", due="2026-09-20T18:00", reminder_sent=True))
+    restored = TodoListData.from_dict(model.to_dict())
+    assert restored.items[0].reminder_sent is True
+
+
+def test_reminder_sent_defaults_false_when_missing_from_stored_data():
+    # Gammal, redan sparad data (från innan reminder_sent fanns) saknar
+    # fältet helt - ska tolkas som "inte påmind", inte krascha.
+    raw = {"items": {"x": {"uid": "x", "summary": "Gammal uppgift"}}, "order": ["x"]}
+    model = TodoListData.from_dict(raw)
+    assert model.items[0].reminder_sent is False
+
+
 def test_from_dict_handles_missing_order_entries():
     # En uid i "items" som saknas i "order" (t.ex. korrupt/gammal data)
     # ska ändå synas, hellre än att tyst försvinna.

@@ -9,6 +9,8 @@ class FamilyTodoPanel extends HTMLElement {
     this._lists = [];
     this._persons = [];
     this._areas = [];
+    this._notifyServices = []; // notify.*-tjänster, för Notiser-tabben
+    this._notifyMap = {}; // person entity_id -> notify service
     this._items = {}; // entry_id -> items[]
     this._sections = {}; // entry_id -> sections[]
     this._activeListId = null;
@@ -55,7 +57,7 @@ class FamilyTodoPanel extends HTMLElement {
         .ft-card-header ha-icon { --mdc-icon-size: 24px; color: var(--primary-color); flex-shrink: 0; }
         .ft-card-header input[type="text"].ft-name { font-size: 16px; font-weight: 500; flex: 1; }
         .ft-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
-        input[type="text"], input[type="date"], select {
+        input[type="text"], input[type="date"], input[type="time"], select {
           padding: 8px 10px; border-radius: 6px; min-width: 120px;
           border: 1px solid var(--divider-color, #ccc); background: var(--card-background-color);
           color: var(--primary-text-color); font-size: 14px; box-sizing: border-box; }
@@ -113,13 +115,23 @@ class FamilyTodoPanel extends HTMLElement {
     this._lists = lists;
     this._persons = persons;
     this._areas = areas;
-    if (!this._activeListId || (this._activeListId !== "__new__" && !lists.find((l) => l.entry_id === this._activeListId))) {
+    const isFixedTab = this._activeListId === "__new__" || this._activeListId === "__notify__";
+    if (!this._activeListId || (!isFixedTab && !lists.find((l) => l.entry_id === this._activeListId))) {
       this._activeListId = lists.length ? lists[0].entry_id : "__new__";
     }
     if (this._activeListId !== "__new__") {
       await this._reloadItems(this._activeListId);
     }
     this._render();
+  }
+
+  async _reloadNotifySettings() {
+    const [{ services }, { map }] = await Promise.all([
+      this._hass.callWS({ type: "family_todo/list_notify_services" }),
+      this._hass.callWS({ type: "family_todo/get_notify_map" }),
+    ]);
+    this._notifyServices = services;
+    this._notifyMap = map;
   }
 
   async _reloadItems(entryId) {
@@ -157,6 +169,17 @@ class FamilyTodoPanel extends HTMLElement {
       });
       tabs.appendChild(btn);
     }
+    const notifyBtn = document.createElement("button");
+    notifyBtn.className = "ft-tab" + (this._activeListId === "__notify__" ? " active" : "");
+    notifyBtn.innerHTML = `<ha-icon icon="mdi:bell-outline"></ha-icon>Notiser`;
+    notifyBtn.addEventListener("click", async () => {
+      this._activeListId = "__notify__";
+      this._addingSection = false;
+      await this._reloadNotifySettings();
+      this._render();
+    });
+    tabs.appendChild(notifyBtn);
+
     const newBtn = document.createElement("button");
     newBtn.className = "ft-tab ft-tab-new" + (this._activeListId === "__new__" ? " active" : "");
     newBtn.innerHTML = `<ha-icon icon="mdi:plus"></ha-icon>Ny lista`;
@@ -175,9 +198,59 @@ class FamilyTodoPanel extends HTMLElement {
       content.appendChild(this._renderNewListCard());
       return;
     }
+    if (this._activeListId === "__notify__") {
+      content.appendChild(this._renderNotifyCard());
+      return;
+    }
     const list = this._lists.find((l) => l.entry_id === this._activeListId);
     if (!list) return;
     content.appendChild(this._renderListCard(list));
+  }
+
+  _renderNotifyCard() {
+    const card = document.createElement("div");
+    card.className = "ft-card";
+    card.innerHTML = `
+      <div class="ft-card-header"><ha-icon icon="mdi:bell-outline"></ha-icon>
+        <span class="ft-name">Notiser</span>
+      </div>
+      <p class="subtitle" style="margin-top:0;">Koppla varje person till sin mobilpush
+        (Inställningar → Enheter &amp; tjänster → Mobilapp, om HA-appen är installerad på
+        deras telefon). En uppgift som är tilldelad en kopplad person och har en <em>tid</em>
+        satt på förfallodatumet (inte bara ett datum) skickar då en påminnelse dit automatiskt,
+        om uppgiften fortfarande inte är avbockad när tiden är inne.</p>
+    `;
+    if (!this._persons.length) {
+      const empty = document.createElement("div");
+      empty.className = "ft-empty";
+      empty.textContent = "Inga person.*-entiteter hittades i Home Assistant.";
+      card.appendChild(empty);
+      return card;
+    }
+    for (const person of this._persons) {
+      const row = document.createElement("div");
+      row.className = "ft-row";
+      const label = document.createElement("span");
+      label.style.cssText = "min-width:120px;";
+      label.textContent = `${person.name}:`;
+      row.appendChild(label);
+      const select = document.createElement("select");
+      select.innerHTML =
+        `<option value="">Ingen påminnelse</option>` +
+        this._notifyServices.map((s) => `<option value="${_esc(s)}">${_esc(s)}</option>`).join("");
+      select.value = this._notifyMap[person.entity_id] || "";
+      select.addEventListener("change", async () => {
+        await this._hass.callWS({
+          type: "family_todo/set_notify_target",
+          person_entity_id: person.entity_id,
+          service: select.value || null,
+        });
+        this._notifyMap = { ...this._notifyMap, [person.entity_id]: select.value };
+      });
+      row.appendChild(select);
+      card.appendChild(row);
+    }
+    return card;
   }
 
   _renderNewListCard() {
@@ -475,7 +548,11 @@ class FamilyTodoPanel extends HTMLElement {
       if (item.assignee) meta.innerHTML += `<span><ha-icon icon="mdi:account"></ha-icon> ${_esc(item.assignee)}</span>`;
       if (item.due) {
         const duePrefix = item.recurrence ? "Nästa: " : "";
-        meta.innerHTML += `<span><ha-icon icon="mdi:calendar"></ha-icon> ${duePrefix}${_esc(item.due)}</span>`;
+        meta.innerHTML += `<span><ha-icon icon="mdi:calendar"></ha-icon> ${duePrefix}${_esc(_formatDue(item.due))}</span>`;
+        if (_hasDueTime(item.due) && !done) {
+          const label = item.reminder_sent ? "Påminnelse skickad" : "Påminnelse skickas om inte avbockad";
+          meta.innerHTML += `<span title="${_esc(label)}"><ha-icon icon="${item.reminder_sent ? "mdi:bell-check-outline" : "mdi:bell-outline"}"></ha-icon></span>`;
+        }
       }
       if (item.recurrence)
         meta.innerHTML += `<span><ha-icon icon="mdi:repeat"></ha-icon> ${_esc(_recurrenceLabel(item.recurrence))}</span>`;
@@ -549,6 +626,47 @@ class FamilyTodoPanel extends HTMLElement {
     return row;
   }
 
+  _renderDueEditor(list, item) {
+    const row = document.createElement("div");
+    row.className = "ft-row";
+    row.innerHTML = `<span>Förfaller:</span>`;
+
+    const [datePart, timePart] = item.due ? item.due.split("T") : ["", ""];
+    const dateInput = document.createElement("input");
+    dateInput.type = "date";
+    dateInput.value = datePart || "";
+    row.appendChild(dateInput);
+
+    const timeInput = document.createElement("input");
+    timeInput.type = "time";
+    timeInput.value = timePart ? timePart.slice(0, 5) : "";
+    timeInput.title = "Valfritt - sätt en tid för att få en påminnelse skickad om uppgiften "
+      + "fortfarande inte är avbockad då (se Notiser-tabben)";
+    row.appendChild(timeInput);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "secondary";
+    saveBtn.textContent = "Spara";
+    saveBtn.addEventListener("click", async () => {
+      const date = dateInput.value;
+      const due = date ? (timeInput.value ? `${date}T${timeInput.value}` : date) : null;
+      await this._hass.callWS({
+        type: "family_todo/update_item",
+        entry_id: list.entry_id,
+        uid: item.uid,
+        summary: item.summary,
+        status: item.status,
+        description: item.description,
+        due,
+      });
+      await this._reloadItems(list.entry_id);
+      this._render();
+    });
+    row.appendChild(saveBtn);
+
+    return row;
+  }
+
   _renderItemDetail(list, item) {
     const detail = document.createElement("div");
     detail.className = "ft-item-detail";
@@ -576,6 +694,8 @@ class FamilyTodoPanel extends HTMLElement {
       sectionRow.appendChild(sectionSelect);
       detail.appendChild(sectionRow);
     }
+
+    detail.appendChild(this._renderDueEditor(list, item));
 
     const assigneeRow = document.createElement("div");
     assigneeRow.className = "ft-row";
@@ -674,6 +794,22 @@ class FamilyTodoPanel extends HTMLElement {
 
     return detail;
   }
+}
+
+function _hasDueTime(due) {
+  // "YYYY-MM-DD" (datum utan tid) är 10 tecken - allt längre har en klockslagsdel.
+  // Måste matcha reminders.py:_due_datetime på backend.
+  return !!due && due.length > 10;
+}
+
+function _formatDue(due) {
+  if (!due) return "";
+  const hasTime = _hasDueTime(due);
+  const d = new Date(hasTime ? due : `${due}T00:00`);
+  if (isNaN(d.getTime())) return due;
+  const datePart = d.toLocaleDateString("sv-SE");
+  if (!hasTime) return datePart;
+  return `${datePart} ${d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 function _esc(str) {

@@ -134,15 +134,23 @@ class FamilyTodoListEntity(TodoListEntity):
                 due=next_due.isoformat(),
                 last_completed=today.isoformat(),
                 subtasks=reset_subtasks,
+                # Nytt tillfälle, nytt due - ska kunna påminnas om igen (se
+                # reminders.py/store.py:reminder_sent).
+                reminder_sent=False,
             )
         else:
             subtasks = existing.subtasks if existing else []
+            # due-ändringar (även från "inget datum" till ett datum, eller
+            # tvärtom) ska kunna trigga en ny påminnelse - bara reminder_sent
+            # om due:t är oförändrat sedan sist.
+            due_changed = existing is None or existing.due != due
             model.update(
                 item.uid,
                 summary=item.summary,
                 status=new_status,
                 description=combine_description(user_text, assignee, subtasks),
                 due=due,
+                reminder_sent=False if due_changed else existing.reminder_sent,
             )
         await self._store.async_save()
         self.async_write_ha_state()

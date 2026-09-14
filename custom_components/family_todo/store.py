@@ -28,6 +28,11 @@ off a recurring item doesn't leave it completed - todo.py intercepts that
 transition and instead rolls the item forward to its next occurrence
 (new `due`, status back to needs_action, subtasks reset). See
 FamilyTodoListEntity.async_update_todo_item.
+
+`reminder_sent` backs the due-date push reminder (see reminders.py): it's
+set once a reminder has gone out for the item's *current* `due`, and reset
+to False by todo.py whenever `due` changes (including a recurrence
+rollover), so the next occurrence can be reminded about too.
 """
 from __future__ import annotations
 
@@ -117,6 +122,7 @@ class TodoItemData:
     section_id: str | None = None
     recurrence: Recurrence | None = None
     last_completed: str | None = None  # ISO date of the last time this was checked off
+    reminder_sent: bool = False  # se reminders.py - nollställs varje gång `due` ändras
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +136,7 @@ class TodoItemData:
             "section_id": self.section_id,
             "recurrence": self.recurrence.to_dict() if self.recurrence else None,
             "last_completed": self.last_completed,
+            "reminder_sent": self.reminder_sent,
         }
 
     @classmethod
@@ -146,6 +153,7 @@ class TodoItemData:
             section_id=data.get("section_id"),
             recurrence=Recurrence.from_dict(recurrence_data) if recurrence_data else None,
             last_completed=data.get("last_completed"),
+            reminder_sent=bool(data.get("reminder_sent", False)),
         )
 
     @property

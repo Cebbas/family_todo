@@ -12,6 +12,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.util import dt as dt_util
 
 from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DOMAIN
+from .notify_map import async_get_notify_map_store
 from .store import (
     RECURRENCE_UNITS,
     FamilyTodoStore,
@@ -62,6 +63,7 @@ def _item_to_dict(item) -> dict:
         "section_id": item.section_id,
         "recurrence": item.recurrence.to_dict() if item.recurrence else None,
         "last_completed": item.last_completed,
+        "reminder_sent": item.reminder_sent,
     }
 
 
@@ -465,6 +467,39 @@ async def ws_list_persons(hass: HomeAssistant, connection, msg):
     connection.send_result(msg["id"], {"persons": persons})
 
 
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_notify_services"})
+@websocket_api.async_response
+async def ws_list_notify_services(hass: HomeAssistant, connection, msg):
+    """Alla registrerade notify.*-tjänster - underlag för Notiser-tabbens väljare."""
+    services = sorted(hass.services.async_services().get("notify", {}).keys())
+    connection.send_result(msg["id"], {"services": services})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/get_notify_map"})
+@websocket_api.async_response
+async def ws_get_notify_map(hass: HomeAssistant, connection, msg):
+    notify_map = await async_get_notify_map_store(hass).async_load()
+    connection.send_result(msg["id"], {"map": dict(notify_map)})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/set_notify_target",
+        vol.Required("person_entity_id"): str,
+        vol.Optional("service"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_set_notify_target(hass: HomeAssistant, connection, msg):
+    """Kopplar (eller, med service=None, kopplar bort) en persons notistjänst.
+
+    Global, listoberoende - se notify_map.py för varför det inte går att
+    härleda automatiskt vilken notify.*-tjänst som hör till en person.
+    """
+    await async_get_notify_map_store(hass).async_set(msg["person_entity_id"], msg.get("service"))
+    connection.send_result(msg["id"], {"ok": True})
+
+
 def async_register_ws_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_list_lists)
     websocket_api.async_register_command(hass, ws_create_list)
@@ -482,3 +517,6 @@ def async_register_ws_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_delete_section)
     websocket_api.async_register_command(hass, ws_list_areas)
     websocket_api.async_register_command(hass, ws_list_persons)
+    websocket_api.async_register_command(hass, ws_list_notify_services)
+    websocket_api.async_register_command(hass, ws_get_notify_map)
+    websocket_api.async_register_command(hass, ws_set_notify_target)

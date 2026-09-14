@@ -41,3 +41,50 @@ async def test_list_areas_empty_when_none_registered(hass):
     connection = _FakeConnection()
     await ws_api.ws_list_areas.__wrapped__(hass, connection, {"id": 1})
     assert connection.result["areas"] == []
+
+
+# ---- notify map: person -> notify service, used by reminders.py ----
+
+async def test_list_notify_services_returns_registered_notify_domain_services(hass):
+    hass.services.async_register("notify", "mobile_app_annas_phone", lambda call: None)
+    hass.services.async_register("notify", "mobile_app_sebbes_phone", lambda call: None)
+
+    connection = _FakeConnection()
+    await ws_api.ws_list_notify_services.__wrapped__(hass, connection, {"id": 1})
+
+    assert connection.result["services"] == ["mobile_app_annas_phone", "mobile_app_sebbes_phone"]
+
+
+async def test_get_notify_map_empty_by_default(hass):
+    connection = _FakeConnection()
+    await ws_api.ws_get_notify_map.__wrapped__(hass, connection, {"id": 1})
+    assert connection.result["map"] == {}
+
+
+async def test_set_notify_target_then_get_notify_map_round_trips(hass):
+    await ws_api.ws_set_notify_target.__wrapped__(
+        hass,
+        _FakeConnection(),
+        {"id": 1, "person_entity_id": "person.anna", "service": "mobile_app_annas_phone"},
+    )
+
+    connection = _FakeConnection()
+    await ws_api.ws_get_notify_map.__wrapped__(hass, connection, {"id": 2})
+
+    assert connection.result["map"] == {"person.anna": "mobile_app_annas_phone"}
+
+
+async def test_set_notify_target_with_no_service_clears_mapping(hass):
+    await ws_api.ws_set_notify_target.__wrapped__(
+        hass,
+        _FakeConnection(),
+        {"id": 1, "person_entity_id": "person.anna", "service": "mobile_app_annas_phone"},
+    )
+    await ws_api.ws_set_notify_target.__wrapped__(
+        hass, _FakeConnection(), {"id": 2, "person_entity_id": "person.anna"}
+    )
+
+    connection = _FakeConnection()
+    await ws_api.ws_get_notify_map.__wrapped__(hass, connection, {"id": 3})
+
+    assert connection.result["map"] == {}

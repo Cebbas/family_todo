@@ -101,6 +101,21 @@ async def test_completing_recurring_item_reopens_it_with_next_due_date(hass):
     assert item.due == "2026-09-23"
 
 
+async def test_completing_recurring_item_resets_reminder_sent_for_next_occurrence(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Byta sängkläder"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(
+        uid, recurrence=Recurrence(interval=2, unit="weeks"), due="2026-09-09", reminder_sent=True
+    )
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Byta sängkläder", status=TodoItemStatus.COMPLETED)
+    )
+
+    assert entity._model().get(uid).reminder_sent is False
+
+
 async def test_completing_recurring_item_sets_last_completed(hass):
     entity = await _make_entity(hass)
     await entity.async_create_todo_item(TodoItem(summary="Dammsuga"))
@@ -214,3 +229,33 @@ async def test_uncompleting_recurring_item_does_not_roll_forward(hass):
     item = entity._model().get(uid)
     assert item.status == "needs_action"
     assert item.due == "2026-09-09"
+
+
+# ---- reminder_sent: nollställs när due ändras, orörd annars ----
+
+async def test_changing_due_date_resets_reminder_sent(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Läxor"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, due="2026-09-09T18:00", reminder_sent=True)
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Läxor", status=TodoItemStatus.NEEDS_ACTION, due=date(2026, 9, 10))
+    )
+
+    assert entity._model().get(uid).reminder_sent is False
+
+
+async def test_unrelated_update_preserves_reminder_sent_when_due_unchanged(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(
+        TodoItem(summary="Läxor", due=date(2026, 9, 9))
+    )
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, reminder_sent=True)
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Läxor (redigerad)", status=TodoItemStatus.NEEDS_ACTION, due=date(2026, 9, 9))
+    )
+
+    assert entity._model().get(uid).reminder_sent is True

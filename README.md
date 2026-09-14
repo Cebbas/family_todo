@@ -22,6 +22,10 @@ Skapar riktiga att-göra-listor i Home Assistant:
   fram förfallodatumet till nästa tillfälle och öppnar den igen automatiskt,
   oavsett om avbockningen skedde i panelen, HA:s eget todo-kort eller via
   röstassistenten
+- sätt en **tid** (inte bara datum) på en uppgifts förfallodatum och få en
+  **mobilpush-påminnelse** skickad till den tilldelade personen om
+  uppgiften fortfarande inte är avbockad när tiden är inne – se
+  "Påminnelser" nedan
 
 ## Känd begränsning: delsteg och tilldelning syns bara i panelen
 
@@ -121,6 +125,34 @@ Att bocka **ur** en redan avklarad uppgift (ångra) rullar inte vidare –
 bara den faktiska övergången till "klar" gör det. Stäng av "Återkommande"
 igen för att göra uppgiften till en vanlig engångsuppgift.
 
+## Påminnelser
+
+Sätter du bara ett **datum** på en uppgifts förfallodag är det precis som
+innan – ingen påminnelse skickas, det syns bara i panelen och på HA:s eget
+todo-kort. Lägger du dessutom till en **tid** (klicka på uppgiften → fältet
+"Förfaller") kan Family Todo skicka en **mobilpush** till den tilldelade
+personen om uppgiften fortfarande inte är avbockad när den tiden är inne –
+en gång, ingen upprepad tjatpåminnelse.
+
+Två saker krävs för att det ska funka:
+
+1. **Uppgiften har en tid på förfallodatumet** – bara datum ger ingen
+   påminnelse, det finns inget klockslag att skicka den vid.
+2. **Den tilldelade personen har en notistjänst kopplad** – under fliken
+   **Notiser** i panelen väljer du, per `person.*`-entitet, vilken
+   `notify.*`-tjänst (t.ex. `mobile_app_sebastians_iphone`, från HA:s
+   Mobilapp-integration) påminnelsen ska gå till. Mappningen är global
+   (gäller alla listor) och sparas separat från själva listorna.
+
+Saknas någon av delarna skickas ingen push – panelen visar en 🔔 (väntar)
+respektive ✅🔔 (skickad) bredvid förfallotiden så du ser om en uppgift
+faktiskt är på väg att påminnas om, och en varning loggas en gång om
+tilldelningen saknar en notiskoppling.
+
+En bakgrundskoll körs var 60:e sekund och letar efter förfallna,
+oavbockade uppgifter – ingen extra automation eller inställning i HA:s
+`automation`-integration behövs.
+
 ## Sektioner
 
 En sektion är en namngiven gruppering av uppgifter inom en lista, t.ex.
@@ -174,6 +206,8 @@ custom_components/
     config_flow.py            # skapa ny lista (formulär, eller direkt från panelen)
     panel.py                     # registrerar sidopanelen + statiska filer
     ws_api.py                       # websocket-kommandon som panelen använder
+    notify_map.py                      # global person -> notify.*-tjänst-mappning (Notiser-tabben)
+    reminders.py                          # periodisk koll som skickar förfallo-påminnelser
     const.py
     manifest.json
     strings.json
