@@ -1,6 +1,7 @@
 """Websocket API used by the Family Todo sidebar panel."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime
 
@@ -26,6 +27,8 @@ from .store import (
     combine_description,
     split_description,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 SUBTASK_SCHEMA = {
     vol.Required("id"): str,
@@ -644,6 +647,34 @@ async def ws_set_notify_target(hass: HomeAssistant, connection, msg):
     connection.send_result(msg["id"], {"ok": True})
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/send_test_notification",
+        vol.Required("service"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_send_test_notification(hass: HomeAssistant, connection, msg):
+    """Skickar en engångs-testnotis till notify.<service> - "Skicka test"-knappen
+    på Notiser-fliken, så man kan verifiera kopplingen utan att vänta på en
+    riktig förfallen uppgift. Samma anropsform som den faktiska påminnelsen
+    (se reminders.py), så ett lyckat test verkligen speglar hur en riktig
+    påminnelse skulle bete sig.
+    """
+    try:
+        await hass.services.async_call(
+            "notify",
+            msg["service"],
+            {"title": "Att göra", "message": "Det här är en testnotis från Att göra-panelen 👋"},
+            blocking=True,
+        )
+    except Exception as err:  # noqa: BLE001 - vilket fel som helst ska visas för användaren, inte krascha panelen
+        _LOGGER.warning("Family Todo: testnotis till notify.%s misslyckades (%s)", msg["service"], err)
+        connection.send_error(msg["id"], "send_failed", str(err) or "Kunde inte skicka notisen.")
+        return
+    connection.send_result(msg["id"], {"ok": True})
+
+
 def async_register_ws_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_list_lists)
     websocket_api.async_register_command(hass, ws_create_list)
@@ -666,3 +697,4 @@ def async_register_ws_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_list_notify_services)
     websocket_api.async_register_command(hass, ws_get_notify_map)
     websocket_api.async_register_command(hass, ws_set_notify_target)
+    websocket_api.async_register_command(hass, ws_send_test_notification)

@@ -148,6 +148,48 @@ async def test_set_notify_target_with_no_service_clears_mapping(hass):
     assert connection.result["map"] == {}
 
 
+async def test_send_test_notification_calls_the_notify_service(hass):
+    calls = []
+    hass.services.async_register("notify", "annas_phone", lambda call: calls.append(call.data))
+
+    connection = _FakeConnection()
+    await ws_api.ws_send_test_notification.__wrapped__(
+        hass, connection, {"id": 1, "service": "annas_phone"}
+    )
+
+    assert connection.error is None
+    assert connection.result == {"ok": True}
+    assert len(calls) == 1
+    assert "test" in calls[0]["message"].lower()
+
+
+async def test_send_test_notification_reports_error_when_service_fails(hass):
+    def _boom(call):
+        raise RuntimeError("ingen anslutning")
+
+    hass.services.async_register("notify", "trasig_tjanst", _boom)
+
+    connection = _FakeConnection()
+    await ws_api.ws_send_test_notification.__wrapped__(
+        hass, connection, {"id": 1, "service": "trasig_tjanst"}
+    )
+
+    assert connection.result is None
+    assert connection.error is not None
+    assert connection.error[0] == "send_failed"
+
+
+async def test_send_test_notification_reports_error_for_unknown_service(hass):
+    connection = _FakeConnection()
+    await ws_api.ws_send_test_notification.__wrapped__(
+        hass, connection, {"id": 1, "service": "finns_inte"}
+    )
+
+    assert connection.result is None
+    assert connection.error is not None
+    assert connection.error[0] == "send_failed"
+
+
 # ---- adult/child write permission (create_item as the representative case -
 # every other gated handler in ws_api.py calls the same
 # _require_list_write_access helper right after the same not_found check) ----

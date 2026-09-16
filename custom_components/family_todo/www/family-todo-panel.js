@@ -297,8 +297,34 @@ class FamilyTodoPanel extends HTMLElement {
           service: select.value || null,
         });
         this._notifyMap = { ...this._notifyMap, [person.entity_id]: select.value };
+        testBtn.disabled = !select.value;
+        status.textContent = "";
       });
       row.appendChild(select);
+
+      const testBtn = document.createElement("button");
+      testBtn.className = "text";
+      testBtn.innerHTML = `<ha-icon icon="mdi:bell-ring-outline"></ha-icon> Skicka test`;
+      testBtn.disabled = !select.value;
+      const status = document.createElement("span");
+      status.style.cssText = "font-size:12px; margin-left:6px;";
+      testBtn.addEventListener("click", async () => {
+        testBtn.disabled = true;
+        status.textContent = "Skickar…";
+        status.style.color = "var(--secondary-text-color)";
+        try {
+          await this._hass.callWS({ type: "family_todo/send_test_notification", service: select.value });
+          status.textContent = "✅ Skickad";
+          status.style.color = "var(--success-color, green)";
+        } catch (err) {
+          status.textContent = `❌ ${(err && err.message) || "Kunde inte skicka"}`;
+          status.style.color = "var(--error-color, red)";
+        }
+        testBtn.disabled = !select.value;
+      });
+      row.appendChild(testBtn);
+      row.appendChild(status);
+
       card.appendChild(row);
     }
     return card;
