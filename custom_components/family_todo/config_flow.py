@@ -19,14 +19,18 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import selector
 
-from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DEFAULT_ICON, DOMAIN
+from .const import CONF_COLOR, CONF_ICON, CONF_NAME, CONF_OWNER_USER_ID, DEFAULT_ICON, DOMAIN
 
 _USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): str,
         vol.Optional(CONF_ICON, default=DEFAULT_ICON): str,
         vol.Optional(CONF_COLOR): str,
+        # Valfri - se permissions.py för vad den styr. Kan även sättas/
+        # ändras senare via panelen (ws_update_list), inte bara här.
+        vol.Optional(CONF_OWNER_USER_ID): selector.UserSelector(),
     }
 )
 
@@ -49,6 +53,7 @@ class FamilyTodoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_NAME: name,
                         CONF_ICON: user_input.get(CONF_ICON) or DEFAULT_ICON,
                         CONF_COLOR: user_input.get(CONF_COLOR),
+                        CONF_OWNER_USER_ID: user_input.get(CONF_OWNER_USER_ID),
                     },
                 )
         return self.async_show_form(step_id="user", data_schema=_USER_SCHEMA, errors=errors)
@@ -62,5 +67,6 @@ class FamilyTodoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_NAME: name,
                 CONF_ICON: user_input.get(CONF_ICON) or DEFAULT_ICON,
                 CONF_COLOR: user_input.get(CONF_COLOR),
+                CONF_OWNER_USER_ID: user_input.get(CONF_OWNER_USER_ID),
             },
         )

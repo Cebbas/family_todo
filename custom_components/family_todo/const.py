@@ -5,6 +5,11 @@ DOMAIN = "family_todo"
 CONF_NAME = "name"
 CONF_ICON = "icon"
 CONF_COLOR = "color"
+# HA user_id för listans "ägare" (valfri) - se permissions.py/ws_api.py.
+# Ett barn (role: "child" i Family Planner) får bara skriva i en lista där
+# owner_user_id matchar dem själva; vuxna och listor utan ägare satt är
+# opåverkade.
+CONF_OWNER_USER_ID = "owner_user_id"
 
 DEFAULT_ICON = "mdi:format-list-checks"
 

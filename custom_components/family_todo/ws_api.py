@@ -1,6 +1,7 @@
 """Websocket API used by the Family Todo sidebar panel."""
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 
 import voluptuous as vol
@@ -9,16 +10,19 @@ from homeassistant.components import websocket_api
 from homeassistant.components.todo import TodoItem, TodoItemStatus
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import floor_registry as fr
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DOMAIN
+from .const import CONF_COLOR, CONF_ICON, CONF_NAME, CONF_OWNER_USER_ID, DOMAIN
 from .notify_map import async_get_notify_map_store
+from .permissions import async_is_adult
 from .store import (
     RECURRENCE_UNITS,
     FamilyTodoStore,
     Recurrence,
     Section,
     Subtask,
+    TodoItemData,
     combine_description,
     split_description,
 )
@@ -41,6 +45,7 @@ def _entry_to_dict(entry) -> dict:
         "name": entry.data.get(CONF_NAME, entry.title),
         "icon": entry.data.get(CONF_ICON),
         "color": entry.data.get(CONF_COLOR),
+        "owner_user_id": entry.data.get(CONF_OWNER_USER_ID),
     }
 
 
@@ -97,6 +102,30 @@ def _get_store(hass: HomeAssistant, entry_id: str) -> FamilyTodoStore | None:
     return entity._store if entity else None
 
 
+async def _require_list_write_access(hass: HomeAssistant, connection, msg: dict, entry_id: str) -> bool:
+    """Gate for every handler that adds/changes/removes something in a list.
+
+    True (allowed) for: adults, callers with no matched Family Planner
+    person (fail open, see permissions.py), and anyone when the list has no
+    owner_user_id set (an unowned list is a shared/family list, not "someone
+    else's" - same convention the card uses for unowned calendars). A child
+    is only blocked from a list that's explicitly owned by somebody else.
+    Sends the "unauthorized" error itself on failure - callers just need to
+    `return` when this comes back False.
+    """
+    user_id = connection.user.id if connection.user else None
+    if await async_is_adult(hass, user_id):
+        return True
+    entry = hass.config_entries.async_get_entry(entry_id)
+    owner = entry.data.get(CONF_OWNER_USER_ID) if entry else None
+    if not owner or owner == user_id:
+        return True
+    connection.send_error(
+        msg["id"], "unauthorized", "Du kan bara lägga till/ändra i din egen lista."
+    )
+    return False
+
+
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_lists"})
 @websocket_api.async_response
 async def ws_list_lists(hass: HomeAssistant, connection, msg):
@@ -110,6 +139,7 @@ async def ws_list_lists(hass: HomeAssistant, connection, msg):
         vol.Required("name"): str,
         vol.Optional("icon"): vol.Any(str, None),
         vol.Optional("color"): vol.Any(str, None),
+        vol.Optional("owner_user_id"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -121,7 +151,12 @@ async def ws_create_list(hass: HomeAssistant, connection, msg):
     result = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": "create_list"},
-        data={"name": name, "icon": msg.get("icon"), "color": msg.get("color")},
+        data={
+            "name": name,
+            "icon": msg.get("icon"),
+            "color": msg.get("color"),
+            "owner_user_id": msg.get("owner_user_id"),
+        },
     )
     if result.get("type") != "create_entry":
         connection.send_error(msg["id"], "invalid_input", "Kunde inte skapa listan")
@@ -136,6 +171,7 @@ async def ws_create_list(hass: HomeAssistant, connection, msg):
         vol.Required("name"): str,
         vol.Optional("icon"): vol.Any(str, None),
         vol.Optional("color"): vol.Any(str, None),
+        vol.Optional("owner_user_id"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -144,11 +180,19 @@ async def ws_update_list(hass: HomeAssistant, connection, msg):
     if entry is None or entry.domain != DOMAIN:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
     name = msg["name"].strip()
     hass.config_entries.async_update_entry(
         entry,
         title=name,
-        data={**entry.data, CONF_NAME: name, CONF_ICON: msg.get("icon"), CONF_COLOR: msg.get("color")},
+        data={
+            **entry.data,
+            CONF_NAME: name,
+            CONF_ICON: msg.get("icon"),
+            CONF_COLOR: msg.get("color"),
+            CONF_OWNER_USER_ID: msg.get("owner_user_id"),
+        },
     )
     connection.send_result(msg["id"], {"ok": True})
 
@@ -161,6 +205,8 @@ async def ws_delete_list(hass: HomeAssistant, connection, msg):
     entry = hass.config_entries.async_get_entry(msg["entry_id"])
     if entry is None or entry.domain != DOMAIN:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
         return
     await hass.config_entries.async_remove(msg["entry_id"])
     connection.send_result(msg["id"], {"ok": True})
@@ -196,6 +242,8 @@ async def ws_create_item(hass: HomeAssistant, connection, msg):
     store = _get_store(hass, msg["entry_id"])
     if entity is None or store is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
         return
     recurrence = Recurrence.from_dict(msg["recurrence"]) if msg.get("recurrence") else None
     due = _parse_due(msg.get("due"))
@@ -249,6 +297,8 @@ async def ws_update_item(hass: HomeAssistant, connection, msg):
     if entity is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
     await entity.async_update_todo_item(
         TodoItem(
             uid=msg["uid"],
@@ -274,6 +324,8 @@ async def ws_delete_item(hass: HomeAssistant, connection, msg):
     if entity is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
     await entity.async_delete_todo_items([msg["uid"]])
     connection.send_result(msg["id"], {"ok": True})
 
@@ -291,6 +343,8 @@ async def ws_move_item(hass: HomeAssistant, connection, msg):
     entity = _get_entity(hass, msg["entry_id"])
     if entity is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
         return
     await entity.async_move_todo_item(msg["uid"], msg.get("previous_uid"))
     connection.send_result(msg["id"], {"ok": True})
@@ -320,6 +374,8 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
     entity = _get_entity(hass, msg["entry_id"])
     if store is None or entity is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
         return
     model = await store.async_load()
     item = model.get(msg["uid"])
@@ -351,6 +407,64 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
 
 
 @websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/copy_item",
+        vol.Required("entry_id"): str,
+        vol.Required("uid"): str,
+        vol.Required("section_ids"): [vol.Any(str, None)],
+    }
+)
+@websocket_api.async_response
+async def ws_copy_item(hass: HomeAssistant, connection, msg):
+    """Skapar en fristående kopia av en uppgift i varje angiven sektion.
+
+    Varje kopia är en helt egen uppgift - eget uid, egen avbockningsstatus,
+    inte samma uppgift taggad i flera rum (en uppgift har bara ett
+    section_id, se store.py). Källuppgiften ändras aldrig. Kopian startar
+    om helt: status/last_completed/reminder_sent nollställs och delstegen
+    får nya id:n och blir oavbockade, medan titel/beskrivning/förfallodag/
+    tilldelning/upprepning tas med som de var.
+    """
+    entity = _get_entity(hass, msg["entry_id"])
+    store = _get_store(hass, msg["entry_id"])
+    if entity is None or store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
+    model = await store.async_load()
+    source = model.get(msg["uid"])
+    if source is None:
+        connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")
+        return
+
+    user_text = split_description(source.description)
+    created_uids = []
+    for section_id in msg["section_ids"]:
+        new_subtasks = [
+            Subtask(id=uuid.uuid4().hex, summary=s.summary, complete=False) for s in source.subtasks
+        ]
+        copy = model.add(
+            TodoItemData(
+                uid="",
+                summary=source.summary,
+                status="needs_action",
+                description=combine_description(user_text, source.assignee, new_subtasks),
+                due=source.due,
+                assignee=source.assignee,
+                subtasks=new_subtasks,
+                section_id=section_id,
+                recurrence=source.recurrence,
+            )
+        )
+        created_uids.append(copy.uid)
+
+    await store.async_save()
+    entity.async_write_ha_state()
+    connection.send_result(msg["id"], {"uids": created_uids})
+
+
+@websocket_api.websocket_command(
     {vol.Required("type"): f"{DOMAIN}/list_sections", vol.Required("entry_id"): str}
 )
 @websocket_api.async_response
@@ -378,6 +492,8 @@ async def ws_create_section(hass: HomeAssistant, connection, msg):
     if store is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
     name = msg["name"].strip()
     if not name:
         connection.send_error(msg["id"], "invalid_input", "Namn krävs")
@@ -403,6 +519,8 @@ async def ws_update_section(hass: HomeAssistant, connection, msg):
     store = _get_store(hass, msg["entry_id"])
     if store is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
         return
     name = msg["name"].strip()
     if not name:
@@ -433,6 +551,8 @@ async def ws_delete_section(hass: HomeAssistant, connection, msg):
     if store is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
     model = await store.async_load()
     model.delete_section(msg["section_id"])
     await store.async_save()
@@ -442,13 +562,37 @@ async def ws_delete_section(hass: HomeAssistant, connection, msg):
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_areas"})
 @websocket_api.async_response
 async def ws_list_areas(hass: HomeAssistant, connection, msg):
-    """HA:s egna areor (rum) - bekvämlighetslista för sektionens area-väljare."""
+    """HA:s egna areor (rum) - bekvämlighetslista för sektionens area-väljare.
+
+    floor_id följer med så panelen kan gruppera sektionerna per våning (en
+    sektion kopplad till en area ärver den areans våning) - se
+    ws_list_floors och _groupSectionsByFloor i family-todo-panel.js.
+    """
     registry = ar.async_get(hass)
     areas = [
-        {"area_id": area.id, "name": area.name, "icon": area.icon} for area in registry.async_list_areas()
+        {"area_id": area.id, "name": area.name, "icon": area.icon, "floor_id": area.floor_id}
+        for area in registry.async_list_areas()
     ]
     areas.sort(key=lambda a: a["name"])
     connection.send_result(msg["id"], {"areas": areas})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_floors"})
+@websocket_api.async_response
+async def ws_list_floors(hass: HomeAssistant, connection, msg):
+    """HA:s egna våningar - för att gruppera sektioner (rum) per våning i panelen.
+
+    Sorterade lägsta våning först; en våning utan angiven "level" (t.ex. en
+    egen "Ute"-våning för utomhusareor, som inte hör till huset i den
+    bemärkelsen) sorteras sist, efter alla riktiga våningsplan.
+    """
+    registry = fr.async_get(hass)
+    floors = [
+        {"floor_id": floor.floor_id, "name": floor.name, "icon": floor.icon, "level": floor.level}
+        for floor in registry.async_list_floors()
+    ]
+    floors.sort(key=lambda f: (f["level"] is None, f["level"] if f["level"] is not None else 0, f["name"]))
+    connection.send_result(msg["id"], {"floors": floors})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/list_persons"})
@@ -511,11 +655,13 @@ def async_register_ws_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_delete_item)
     websocket_api.async_register_command(hass, ws_move_item)
     websocket_api.async_register_command(hass, ws_set_item_extra)
+    websocket_api.async_register_command(hass, ws_copy_item)
     websocket_api.async_register_command(hass, ws_list_sections)
     websocket_api.async_register_command(hass, ws_create_section)
     websocket_api.async_register_command(hass, ws_update_section)
     websocket_api.async_register_command(hass, ws_delete_section)
     websocket_api.async_register_command(hass, ws_list_areas)
+    websocket_api.async_register_command(hass, ws_list_floors)
     websocket_api.async_register_command(hass, ws_list_persons)
     websocket_api.async_register_command(hass, ws_list_notify_services)
     websocket_api.async_register_command(hass, ws_get_notify_map)
