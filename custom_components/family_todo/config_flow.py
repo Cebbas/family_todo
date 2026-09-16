@@ -19,7 +19,6 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import selector
 
 from .const import CONF_COLOR, CONF_ICON, CONF_NAME, CONF_OWNER_USER_ID, DEFAULT_ICON, DOMAIN
 
@@ -28,9 +27,14 @@ _USER_SCHEMA = vol.Schema(
         vol.Required(CONF_NAME): str,
         vol.Optional(CONF_ICON, default=DEFAULT_ICON): str,
         vol.Optional(CONF_COLOR): str,
-        # Valfri - se permissions.py för vad den styr. Kan även sättas/
-        # ändras senare via panelen (ws_update_list), inte bara här.
-        vol.Optional(CONF_OWNER_USER_ID): selector.UserSelector(),
+        # Ägaren sätts i praktiken via panelen (ws_update_list) efter att
+        # listan skapats, inte här i det sällan använda manuella
+        # "Lägg till integration"-formuläret - se permissions.py för vad
+        # fältet styr. Inget selector.UserSelector() här: den klassen finns
+        # inte i alla HA-kärnversioner (kraschade importen av hela modulen,
+        # och därmed uppstarten av VARJE Family Todo-lista, på en instans
+        # där den saknades) - ett vanligt textfält är däremot alltid säkert.
+        vol.Optional(CONF_OWNER_USER_ID): str,
     }
 )
 
