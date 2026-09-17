@@ -15,8 +15,10 @@ class FamilyTodoPanel extends HTMLElement {
     this._items = {}; // entry_id -> items[]
     this._sections = {}; // entry_id -> sections[]
     this._activeListId = null;
-    this._openItems = {}; // uid -> bool (delsteg/tilldelning expanderat)
-    this._copyPickerOpen = {}; // uid -> bool (kopiera-till-rum-väljaren expanderad)
+    this._openItems = {}; // uid -> bool (redigeringspanelen - delsteg/tilldelning/kopiera - expanderad)
+    this._collapsedLists = {}; // entry_id -> bool
+    this._collapsedFloors = {}; // "entry_id::floor_id" -> bool
+    this._collapsedSections = {}; // "entry_id::section_id (eller __none__)" -> bool
     this._addingSection = false;
     this._initialized = false;
     this._haUsers = []; // HA-konton, för "Ägare"-väljaren - se _reloadLists/_mkUserPicker
@@ -100,6 +102,8 @@ class FamilyTodoPanel extends HTMLElement {
           padding-bottom: 4px; font-weight: 600; font-size: 15px; color: var(--primary-text-color); }
         .ft-floor-header:first-child { margin-top: 8px; }
         .ft-floor-header ha-icon { --mdc-icon-size: 20px; color: var(--primary-color); }
+        .ft-collapse-toggle { display: inline-flex; align-items: center; gap: 4px; }
+        .ft-collapse-toggle button.text { padding: 2px 4px; }
         .ft-section-add { border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; padding: 10px;
           margin-top: 12px; }
       </style>
@@ -197,6 +201,36 @@ class FamilyTodoPanel extends HTMLElement {
     const groups = this._floors.filter((f) => byFloorId.has(f.floor_id)).map((f) => byFloorId.get(f.floor_id));
     if (noFloor.length) groups.push({ floor: null, sections: noFloor });
     return groups;
+  }
+
+  _incompleteCount(items) {
+    return items.filter((i) => i.status !== "completed").length;
+  }
+
+  // Fäll-ihop/visa-knapp med en badge (antal ej klara) som bara syns när
+  // gruppen är hopfälld - används för hela listan, varje våning och varje
+  // rum/sektion, samma mönster på alla tre nivåer.
+  _mkCollapseToggle(collapsed, incompleteCount, onToggle) {
+    const wrap = document.createElement("span");
+    wrap.className = "ft-collapse-toggle";
+    const btn = document.createElement("button");
+    btn.className = "text";
+    btn.innerHTML = `<ha-icon icon="${collapsed ? "mdi:chevron-right" : "mdi:chevron-down"}"></ha-icon>`;
+    btn.title = collapsed ? "Visa" : "Dölj";
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      onToggle();
+      this._render();
+    });
+    wrap.appendChild(btn);
+    if (collapsed) {
+      const badge = document.createElement("span");
+      badge.className = "ft-progress";
+      badge.textContent = String(incompleteCount);
+      badge.title = `${incompleteCount} ej klara`;
+      wrap.appendChild(badge);
+    }
+    return wrap;
   }
 
   _render() {
@@ -446,7 +480,18 @@ class FamilyTodoPanel extends HTMLElement {
       await this._reloadLists();
     });
     header.appendChild(deleteBtn);
+
+    const listCollapsed = !!this._collapsedLists[list.entry_id];
+    header.appendChild(
+      this._mkCollapseToggle(listCollapsed, this._incompleteCount(items), () => {
+        this._collapsedLists[list.entry_id] = !listCollapsed;
+      })
+    );
     card.appendChild(header);
+
+    if (listCollapsed) {
+      return card;
+    }
 
     const sections = this._sections[list.entry_id] || [];
 
@@ -495,12 +540,23 @@ class FamilyTodoPanel extends HTMLElement {
       }
     } else {
       for (const group of this._groupSectionsByFloor(sections)) {
+        const groupSectionIds = new Set(group.sections.map((s) => s.id));
+        const groupItems = items.filter((i) => groupSectionIds.has(i.section_id));
+        let floorCollapsed = false;
         if (group.floor) {
+          const floorKey = `${list.entry_id}::${group.floor.floor_id}`;
+          floorCollapsed = !!this._collapsedFloors[floorKey];
           const floorHeader = document.createElement("div");
           floorHeader.className = "ft-floor-header";
-          floorHeader.innerHTML = `<ha-icon icon="${group.floor.icon || "mdi:layers-outline"}"></ha-icon><span>${_esc(group.floor.name)}</span>`;
+          floorHeader.innerHTML = `<ha-icon icon="${group.floor.icon || "mdi:layers-outline"}"></ha-icon><span style="flex:1">${_esc(group.floor.name)}</span>`;
+          floorHeader.appendChild(
+            this._mkCollapseToggle(floorCollapsed, this._incompleteCount(groupItems), () => {
+              this._collapsedFloors[floorKey] = !floorCollapsed;
+            })
+          );
           card.appendChild(floorHeader);
         }
+        if (floorCollapsed) continue;
         for (const section of group.sections) {
           card.appendChild(this._renderSectionGroup(list, section, items.filter((i) => i.section_id === section.id)));
         }
@@ -543,7 +599,18 @@ class FamilyTodoPanel extends HTMLElement {
     } else {
       header.innerHTML = `<ha-icon icon="mdi:tray"></ha-icon><span class="ft-section-name">Utan sektion</span>`;
     }
+    const sectionKey = `${list.entry_id}::${section ? section.id : "__none__"}`;
+    const sectionCollapsed = !!this._collapsedSections[sectionKey];
+    header.appendChild(
+      this._mkCollapseToggle(sectionCollapsed, this._incompleteCount(items), () => {
+        this._collapsedSections[sectionKey] = !sectionCollapsed;
+      })
+    );
     group.appendChild(header);
+
+    if (sectionCollapsed) {
+      return group;
+    }
 
     if (!items.length) {
       const empty = document.createElement("div");
@@ -639,34 +706,44 @@ class FamilyTodoPanel extends HTMLElement {
 
   // Kryssrutelista med listans övriga sektioner ("rum") - "Kopiera hit"
   // skapar en fristående kopia av uppgiften i varje ikryssad sektion, se
-  // family_todo/copy_item i ws_api.py. Källuppgiften rörs inte.
+  // family_todo/copy_item i ws_api.py. Källuppgiften rörs inte. Del av
+  // redigeringspanelen (_renderItemDetail), inte en egen fälls-ut-ruta -
+  // därför ingen egen "ft-item-detail"-klass här, den ärver panelens.
   _renderCopyPicker(list, item) {
     const box = document.createElement("div");
-    box.className = "ft-item-detail";
+
+    const label = document.createElement("div");
+    label.className = "ft-row";
+    label.innerHTML = `<span>Kopiera till andra rum:</span>`;
+    box.appendChild(label);
 
     const sections = this._sections[list.entry_id] || [];
     const targets = sections.filter((s) => s.id !== item.section_id);
     if (targets.length === 0) {
-      box.innerHTML = `<div class="ft-empty">Inga andra rum i den här listan.</div>`;
+      const empty = document.createElement("div");
+      empty.className = "ft-empty";
+      empty.textContent = "Inga andra rum i den här listan.";
+      box.appendChild(empty);
       return box;
     }
 
     const checkboxes = targets.map((s) => {
-      const label = document.createElement("label");
-      label.style.display = "flex";
-      label.style.alignItems = "center";
-      label.style.gap = "6px";
-      label.style.marginBottom = "6px";
+      const optionLabel = document.createElement("label");
+      optionLabel.style.display = "flex";
+      optionLabel.style.alignItems = "center";
+      optionLabel.style.gap = "6px";
+      optionLabel.style.marginBottom = "6px";
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.value = s.id;
-      label.appendChild(cb);
-      label.appendChild(document.createTextNode(s.name));
-      box.appendChild(label);
+      optionLabel.appendChild(cb);
+      optionLabel.appendChild(document.createTextNode(s.name));
+      box.appendChild(optionLabel);
       return cb;
     });
 
     const confirmBtn = document.createElement("button");
+    confirmBtn.className = "secondary";
     confirmBtn.textContent = "Kopiera hit";
     confirmBtn.addEventListener("click", async () => {
       const sectionIds = checkboxes.filter((c) => c.checked).map((c) => c.value);
@@ -677,7 +754,7 @@ class FamilyTodoPanel extends HTMLElement {
         uid: item.uid,
         section_ids: sectionIds,
       });
-      this._copyPickerOpen[item.uid] = false;
+      this._openItems[item.uid] = false;
       await this._reloadItems(list.entry_id);
       this._render();
     });
@@ -714,7 +791,7 @@ class FamilyTodoPanel extends HTMLElement {
     const summary = document.createElement("div");
     summary.className = "ft-item-summary" + (done ? " done" : "");
     summary.textContent = item.summary;
-    summary.title = "Klicka för att visa delsteg och tilldelning";
+    summary.title = "Klicka för att visa redigeringsverktygen";
     summary.addEventListener("click", () => {
       this._openItems[item.uid] = !this._openItems[item.uid];
       this._render();
@@ -728,22 +805,18 @@ class FamilyTodoPanel extends HTMLElement {
       row.appendChild(badge);
     }
 
-    // Kopiera till andra rum - skapar en helt fristående kopia (eget uid,
-    // egen avbockning) i valda sektioner inom samma lista, se
-    // _renderCopyPicker/family_todo/copy_item. Bara relevant för listor med
-    // fler än en sektion att kopiera till.
-    const sectionsInList = this._sections[list.entry_id] || [];
-    if (sectionsInList.length > 1) {
-      const copyBtn = document.createElement("button");
-      copyBtn.className = "text";
-      copyBtn.innerHTML = `<ha-icon icon="mdi:content-copy"></ha-icon>`;
-      copyBtn.title = "Kopiera till andra rum";
-      copyBtn.addEventListener("click", () => {
-        this._copyPickerOpen[item.uid] = !this._copyPickerOpen[item.uid];
-        this._render();
-      });
-      row.appendChild(copyBtn);
-    }
+    // Redigera - öppnar samma panel (_renderItemDetail) som att klicka på
+    // titeln gör: sektion, förfallodag, tilldelning, delsteg och (för
+    // listor med fler än en sektion) kopiera-till-rum, se dit.
+    const editBtn = document.createElement("button");
+    editBtn.className = "text";
+    editBtn.innerHTML = `<ha-icon icon="mdi:pencil-outline"></ha-icon>`;
+    editBtn.title = "Redigera";
+    editBtn.addEventListener("click", () => {
+      this._openItems[item.uid] = !this._openItems[item.uid];
+      this._render();
+    });
+    row.appendChild(editBtn);
 
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "text";
@@ -756,10 +829,6 @@ class FamilyTodoPanel extends HTMLElement {
     row.appendChild(deleteBtn);
 
     wrap.appendChild(row);
-
-    if (this._copyPickerOpen[item.uid]) {
-      wrap.appendChild(this._renderCopyPicker(list, item));
-    }
 
     if (item.assignee || item.due || item.recurrence || item.last_completed) {
       const meta = document.createElement("div");
@@ -1010,6 +1079,12 @@ class FamilyTodoPanel extends HTMLElement {
     });
     addSubRow.appendChild(addSubBtn);
     detail.appendChild(addSubRow);
+
+    // Kopiera till andra rum - bara meningsfullt om listan har fler än en
+    // sektion att kopiera till, se _renderCopyPicker.
+    if ((this._sections[list.entry_id] || []).length > 1) {
+      detail.appendChild(this._renderCopyPicker(list, item));
+    }
 
     return detail;
   }
