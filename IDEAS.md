@@ -75,8 +75,13 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
 ## Robusthet
 - [ ] Repair-issue om en listas lagringsfil är korrupt, istället för att
   bara tyst visa en tom lista
-- [ ] Diagnostics-stöd (`diagnostics.py`) för att exportera
-  felsökningsdata via HA:s inbyggda diagnostics-gränssnitt
+- [x] Diagnostics-stöd (`diagnostics.py`) för att exportera
+  felsökningsdata via HA:s inbyggda diagnostics-gränssnitt - en config-
+  entry (lista) i taget: hela dess sparade data (uppgifter/sektioner/
+  ordning) + entryns egen config + den delade person->notify-mappningen,
+  med `owner_user_id`/`notify_map` redigerade bort (identifierar en
+  specifik persons HA-konto/telefon, inte relevant för att felsöka en
+  lista/påminnelse)
 
 ## Sidopanel
 - [x] Flikar per lista + en "Ny lista"-flik
