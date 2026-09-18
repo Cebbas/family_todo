@@ -30,15 +30,17 @@ from .store import (
 
 _LOGGER = logging.getLogger(__name__)
 
+RECURRENCE_SCHEMA = {
+    vol.Required("interval"): vol.All(int, vol.Range(min=1)),
+    vol.Required("unit"): vol.In(RECURRENCE_UNITS),
+}
+
 SUBTASK_SCHEMA = {
     vol.Required("id"): str,
     vol.Required("summary"): str,
     vol.Optional("complete", default=False): bool,
-}
-
-RECURRENCE_SCHEMA = {
-    vol.Required("interval"): vol.All(int, vol.Range(min=1)),
-    vol.Required("unit"): vol.In(RECURRENCE_UNITS),
+    vol.Optional("due"): vol.Any(str, None),
+    vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
 }
 
 
@@ -364,6 +366,39 @@ async def ws_move_item(hass: HomeAssistant, connection, msg):
         vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
     }
 )
+def _roll_recurring_subtasks(old_subtasks: list, new_subtasks: list) -> list:
+    """Mirrors the item-level rollover in todo.py's async_update_todo_item,
+    but per subtask instead of per item: a subtask with its own recurrence
+    that just got checked off (complete False -> True, matched by id, so
+    an add/remove/reorder in the same save doesn't misfire this) is left
+    at needs_action with its due date rolled forward, rather than staying
+    checked - same "answer every occurrence, not just the first" reasoning,
+    just scoped to one checklist entry instead of the whole item."""
+    old_by_id = {s.id: s for s in old_subtasks}
+    today = dt_util.now().date()
+    rolled = []
+    for sub in new_subtasks:
+        old = old_by_id.get(sub.id)
+        just_completed = old is not None and not old.complete and sub.complete
+        if just_completed and sub.recurrence is not None:
+            base = _parse_due(sub.due) or today
+            if hasattr(base, "date"):
+                base = base.date()
+            next_due = sub.recurrence.next_date(base)
+            rolled.append(
+                Subtask(
+                    id=sub.id,
+                    summary=sub.summary,
+                    complete=False,
+                    due=next_due.isoformat(),
+                    recurrence=sub.recurrence,
+                )
+            )
+        else:
+            rolled.append(sub)
+    return rolled
+
+
 @websocket_api.async_response
 async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
     """Sparar delsteg, tilldelning, sektion och upprepning - utökningsdata, se store.py.
@@ -389,7 +424,9 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
     if "assignee" in msg:
         changes["assignee"] = msg["assignee"]
     if "subtasks" in msg:
-        changes["subtasks"] = [Subtask.from_dict(s) for s in msg["subtasks"]]
+        changes["subtasks"] = _roll_recurring_subtasks(
+            item.subtasks, [Subtask.from_dict(s) for s in msg["subtasks"]]
+        )
     if "section_id" in msg:
         changes["section_id"] = msg["section_id"]
     if "recurrence" in msg:
@@ -445,7 +482,14 @@ async def ws_copy_item(hass: HomeAssistant, connection, msg):
     created_uids = []
     for section_id in msg["section_ids"]:
         new_subtasks = [
-            Subtask(id=uuid.uuid4().hex, summary=s.summary, complete=False) for s in source.subtasks
+            Subtask(
+                id=uuid.uuid4().hex,
+                summary=s.summary,
+                complete=False,
+                due=s.due,
+                recurrence=s.recurrence,
+            )
+            for s in source.subtasks
         ]
         copy = model.add(
             TodoItemData(

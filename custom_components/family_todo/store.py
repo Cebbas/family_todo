@@ -53,18 +53,42 @@ RECURRENCE_UNITS = ("days", "weeks", "months")
 
 @dataclass
 class Subtask:
-    """A single checklist entry within a todo item."""
+    """A single checklist entry within a todo item.
+
+    `due`/`recurrence` are independent of the parent item's own - a
+    subtask can have its own deadline and repeat on its own schedule
+    (e.g. "vattna blommorna" every 3 days inside a longer-lived item).
+    Rollover on check-off is handled the same place the item-level one
+    is (ws_set_item_extra in ws_api.py, mirroring the pattern in
+    todo.py's async_update_todo_item), not here - this class only holds
+    the data.
+    """
 
     id: str
     summary: str
     complete: bool = False
+    due: str | None = None
+    recurrence: "Recurrence | None" = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "summary": self.summary, "complete": self.complete}
+        return {
+            "id": self.id,
+            "summary": self.summary,
+            "complete": self.complete,
+            "due": self.due,
+            "recurrence": self.recurrence.to_dict() if self.recurrence else None,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Subtask":
-        return cls(id=data["id"], summary=data["summary"], complete=bool(data.get("complete", False)))
+        recurrence_data = data.get("recurrence")
+        return cls(
+            id=data["id"],
+            summary=data["summary"],
+            complete=bool(data.get("complete", False)),
+            due=data.get("due"),
+            recurrence=Recurrence.from_dict(recurrence_data) if recurrence_data else None,
+        )
 
 
 @dataclass

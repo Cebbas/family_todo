@@ -16,6 +16,8 @@ class FamilyTodoPanel extends HTMLElement {
     this._sections = {}; // entry_id -> sections[]
     this._activeListId = null;
     this._openItems = {}; // uid -> bool (redigeringspanelen - delsteg/tilldelning/kopiera - expanderad)
+    this._openSubtasks = {}; // uid -> bool (snabb delsteg-checklista i raden, utan att öppna redigeringspanelen)
+    this._openSubtaskEditors = {}; // subtask id -> bool (deadline/återkommande-mini-editor öppen, i redigeringspanelen)
     this._collapsedLists = {}; // entry_id -> bool
     this._collapsedFloors = {}; // "entry_id::floor_id" -> bool
     this._collapsedSections = {}; // "entry_id::section_id (eller __none__)" -> bool
@@ -87,9 +89,18 @@ class FamilyTodoPanel extends HTMLElement {
         .ft-subtask-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
         .ft-subtask-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
         .ft-subtask-row span.done { text-decoration: line-through; color: var(--secondary-text-color); }
+        .ft-subtask-row span:not(.done):not(.ft-subtask-badge) { flex: 1; }
+        .ft-subtask-badge { font-size: 11px; color: var(--secondary-text-color); display: flex;
+          align-items: center; gap: 2px; white-space: nowrap; }
+        .ft-subtask-badge ha-icon { --mdc-icon-size: 14px; }
+        .ft-subtask-quicklist { padding: 4px 0 2px 30px; }
+        .ft-subtask-mini-editor { align-items: center; gap: 6px; padding-left: 22px; margin-bottom: 6px; }
         .ft-empty { color: var(--secondary-text-color); font-size: 14px; padding: 12px 0; }
         .ft-progress { font-size: 11px; padding: 1px 6px; border-radius: 999px;
           background: var(--secondary-background-color, #eee); color: var(--secondary-text-color); }
+        .ft-progress-toggle { display: flex; align-items: center; gap: 2px; border: none;
+          cursor: pointer; font-family: inherit; }
+        .ft-progress-toggle ha-icon { --mdc-icon-size: 14px; }
         .ft-section { margin-top: 18px; }
         .ft-section:first-of-type { margin-top: 8px; }
         .ft-section-header { display: flex; align-items: center; gap: 8px; padding: 6px 0;
@@ -799,9 +810,16 @@ class FamilyTodoPanel extends HTMLElement {
     row.appendChild(summary);
 
     if (item.subtasks_total > 0) {
-      const badge = document.createElement("span");
-      badge.className = "ft-progress";
-      badge.textContent = `${item.subtasks_done}/${item.subtasks_total}`;
+      const badge = document.createElement("button");
+      badge.className = "ft-progress ft-progress-toggle";
+      badge.innerHTML =
+        `${item.subtasks_done}/${item.subtasks_total}` +
+        `<ha-icon icon="${this._openSubtasks[item.uid] ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>`;
+      badge.title = "Visa/dölj delsteg";
+      badge.addEventListener("click", () => {
+        this._openSubtasks[item.uid] = !this._openSubtasks[item.uid];
+        this._render();
+      });
       row.appendChild(badge);
     }
 
@@ -849,11 +867,64 @@ class FamilyTodoPanel extends HTMLElement {
       wrap.appendChild(meta);
     }
 
+    if (item.subtasks_total > 0 && this._openSubtasks[item.uid] && !this._openItems[item.uid]) {
+      // Only shown when the full edit panel isn't already open - that
+      // one already renders the same subtasks (with due/recurrence/
+      // delete controls), so showing both at once would just duplicate
+      // the list.
+      wrap.appendChild(this._renderSubtaskQuickList(list, item));
+    }
+
     if (this._openItems[item.uid]) {
       wrap.appendChild(this._renderItemDetail(list, item));
     }
 
     return wrap;
+  }
+
+  // Check-off-only checklist shown right under the row when the X/Y badge
+  // is clicked - no delete/add/due/recurrence controls, those stay behind
+  // the pencil in _renderItemDetail/_renderSubtaskEditRow. Point of this
+  // one is speed: ticking off a subtask day-to-day shouldn't require
+  // opening the full edit panel first.
+  _renderSubtaskQuickList(list, item) {
+    const box = document.createElement("div");
+    box.className = "ft-subtask-quicklist";
+    for (const sub of item.subtasks) {
+      const subRow = document.createElement("div");
+      subRow.className = "ft-subtask-row";
+      const subCheckbox = document.createElement("input");
+      subCheckbox.type = "checkbox";
+      subCheckbox.checked = sub.complete;
+      subCheckbox.addEventListener("change", async () => {
+        const updated = item.subtasks.map((s) =>
+          s.id === sub.id ? { ...s, complete: subCheckbox.checked } : s
+        );
+        await this._hass.callWS({
+          type: "family_todo/set_item_extra",
+          entry_id: list.entry_id,
+          uid: item.uid,
+          subtasks: updated,
+        });
+        await this._reloadItems(list.entry_id);
+        this._render();
+      });
+      subRow.appendChild(subCheckbox);
+      const subText = document.createElement("span");
+      subText.className = sub.complete ? "done" : "";
+      subText.textContent = sub.summary;
+      subRow.appendChild(subText);
+      if (sub.due || sub.recurrence) {
+        const badge = document.createElement("span");
+        badge.className = "ft-subtask-badge";
+        let label = sub.due ? _formatDue(sub.due) : "";
+        if (sub.recurrence) label += (label ? " · " : "") + _recurrenceLabel(sub.recurrence);
+        badge.innerHTML = `<ha-icon icon="mdi:calendar-clock"></ha-icon> ${_esc(label)}`;
+        subRow.appendChild(badge);
+      }
+      box.appendChild(subRow);
+    }
+    return box;
   }
 
   _renderRecurrenceEditor(list, item) {
@@ -912,6 +983,120 @@ class FamilyTodoPanel extends HTMLElement {
     row.appendChild(saveBtn);
 
     return row;
+  }
+
+  // Checkbox + summary + due/recurrence badge + gear (opens a compact
+  // date/recurrence editor, same idea as _renderDueEditor/
+  // _renderRecurrenceEditor but merged into one row and saved together
+  // via set_item_extra, since a subtask's due+recurrence live on the
+  // same object) + delete, for the full edit panel. `this._openSubtaskEditors`
+  // (keyed by subtask id) tracks which one has its mini-editor open.
+  _renderSubtaskEditRow(item, sub, saveSubtasks) {
+    const wrap = document.createElement("div");
+
+    const subRow = document.createElement("div");
+    subRow.className = "ft-subtask-row";
+    const subCheckbox = document.createElement("input");
+    subCheckbox.type = "checkbox";
+    subCheckbox.checked = sub.complete;
+    subCheckbox.addEventListener("change", () => {
+      const updated = item.subtasks.map((s) =>
+        s.id === sub.id ? { ...s, complete: subCheckbox.checked } : s
+      );
+      saveSubtasks(updated);
+    });
+    subRow.appendChild(subCheckbox);
+
+    const subText = document.createElement("span");
+    subText.className = sub.complete ? "done" : "";
+    subText.textContent = sub.summary;
+    subRow.appendChild(subText);
+
+    if (sub.due || sub.recurrence) {
+      const badge = document.createElement("span");
+      badge.className = "ft-subtask-badge";
+      let label = sub.due ? _formatDue(sub.due) : "";
+      if (sub.recurrence) label += (label ? " · " : "") + _recurrenceLabel(sub.recurrence);
+      badge.innerHTML = `<ha-icon icon="mdi:calendar-clock"></ha-icon> ${_esc(label)}`;
+      subRow.appendChild(badge);
+    }
+
+    const gearBtn = document.createElement("button");
+    gearBtn.className = "text";
+    gearBtn.innerHTML = `<ha-icon icon="mdi:cog-outline"></ha-icon>`;
+    gearBtn.title = "Deadline/återkommande för delsteget";
+    gearBtn.addEventListener("click", () => {
+      this._openSubtaskEditors[sub.id] = !this._openSubtaskEditors[sub.id];
+      this._render();
+    });
+    subRow.appendChild(gearBtn);
+
+    const subDelete = document.createElement("button");
+    subDelete.className = "text";
+    subDelete.innerHTML = `<ha-icon icon="mdi:close"></ha-icon>`;
+    subDelete.addEventListener("click", () => {
+      saveSubtasks(item.subtasks.filter((s) => s.id !== sub.id));
+    });
+    subRow.appendChild(subDelete);
+    wrap.appendChild(subRow);
+
+    if (this._openSubtaskEditors[sub.id]) {
+      const editRow = document.createElement("div");
+      editRow.className = "ft-row ft-subtask-mini-editor";
+
+      const dateInput = document.createElement("input");
+      dateInput.type = "date";
+      dateInput.value = sub.due || "";
+      editRow.appendChild(dateInput);
+
+      const hasRecurrence = !!sub.recurrence;
+      const recurCb = document.createElement("input");
+      recurCb.type = "checkbox";
+      recurCb.checked = hasRecurrence;
+      recurCb.title = "Återkommande delsteg";
+      editRow.appendChild(recurCb);
+
+      const intervalInput = document.createElement("input");
+      intervalInput.type = "number";
+      intervalInput.min = "1";
+      intervalInput.value = hasRecurrence ? sub.recurrence.interval : 1;
+      intervalInput.style.cssText = "width:50px;min-width:50px;";
+      intervalInput.disabled = !hasRecurrence;
+      editRow.appendChild(intervalInput);
+
+      const unitSelect = document.createElement("select");
+      unitSelect.innerHTML = `
+        <option value="days">dagar</option>
+        <option value="weeks">veckor</option>
+        <option value="months">månader</option>
+      `;
+      unitSelect.value = hasRecurrence ? sub.recurrence.unit : "weeks";
+      unitSelect.disabled = !hasRecurrence;
+      editRow.appendChild(unitSelect);
+
+      recurCb.addEventListener("change", () => {
+        intervalInput.disabled = !recurCb.checked;
+        unitSelect.disabled = !recurCb.checked;
+      });
+
+      const saveBtn = document.createElement("button");
+      saveBtn.className = "secondary";
+      saveBtn.textContent = "Spara";
+      saveBtn.addEventListener("click", () => {
+        const recurrence = recurCb.checked
+          ? { interval: Math.max(1, parseInt(intervalInput.value, 10) || 1), unit: unitSelect.value }
+          : null;
+        const updated = item.subtasks.map((s) =>
+          s.id === sub.id ? { ...s, due: dateInput.value || null, recurrence } : s
+        );
+        this._openSubtaskEditors[sub.id] = false;
+        saveSubtasks(updated);
+      });
+      editRow.appendChild(saveBtn);
+      wrap.appendChild(editRow);
+    }
+
+    return wrap;
   }
 
   _renderDueEditor(list, item) {
@@ -1034,30 +1219,7 @@ class FamilyTodoPanel extends HTMLElement {
     };
 
     for (const sub of item.subtasks) {
-      const subRow = document.createElement("div");
-      subRow.className = "ft-subtask-row";
-      const subCheckbox = document.createElement("input");
-      subCheckbox.type = "checkbox";
-      subCheckbox.checked = sub.complete;
-      subCheckbox.addEventListener("change", () => {
-        const updated = item.subtasks.map((s) =>
-          s.id === sub.id ? { ...s, complete: subCheckbox.checked } : s
-        );
-        saveSubtasks(updated);
-      });
-      subRow.appendChild(subCheckbox);
-      const subText = document.createElement("span");
-      subText.className = sub.complete ? "done" : "";
-      subText.textContent = sub.summary;
-      subRow.appendChild(subText);
-      const subDelete = document.createElement("button");
-      subDelete.className = "text";
-      subDelete.innerHTML = `<ha-icon icon="mdi:close"></ha-icon>`;
-      subDelete.addEventListener("click", () => {
-        saveSubtasks(item.subtasks.filter((s) => s.id !== sub.id));
-      });
-      subRow.appendChild(subDelete);
-      detail.appendChild(subRow);
+      detail.appendChild(this._renderSubtaskEditRow(item, sub, saveSubtasks));
     }
 
     const addSubRow = document.createElement("div");

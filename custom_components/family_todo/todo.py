@@ -125,7 +125,17 @@ class FamilyTodoListEntity(TodoListEntity):
             if hasattr(base, "date"):
                 base = base.date()
             next_due = existing.recurrence.next_date(base)
-            reset_subtasks = [Subtask(id=s.id, summary=s.summary, complete=False) for s in existing.subtasks]
+            # A subtask's own recurrence *setting* carries over to the new
+            # occurrence (it's independent metadata, not tied to whether
+            # the parent item happened to just roll over) - its `due` does
+            # not, since that was for the occurrence that just finished;
+            # a recurring subtask gets a fresh one the next time it's
+            # itself checked off (see _roll_recurring_subtasks in
+            # ws_api.py), a non-recurring one just has none until set again.
+            reset_subtasks = [
+                Subtask(id=s.id, summary=s.summary, complete=False, recurrence=s.recurrence)
+                for s in existing.subtasks
+            ]
             model.update(
                 item.uid,
                 summary=item.summary,

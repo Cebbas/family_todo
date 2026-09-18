@@ -22,6 +22,15 @@
   framflyttat och ev. delsteg nollställda, istället för att lämna den
   avklarad. Skiljer sig från övrig utökningsdata genom att den faktiskt
   ändrar beteendet överallt, inte bara i panelen.
+- [x] Snabb delsteg-checklista direkt i uppgiftsraden: X/Y-märket är nu en
+  knapp som fäller ut en kryssa-av-bara-lista (ingen redigeringspanel
+  behövs för att bocka av ett delsteg) - lägg till/ta bort/deadline
+  ligger kvar bakom pennan som förut
+- [x] Eget förfallodatum + eget återkommande-intervall per delsteg, inte
+  bara på hela uppgiften – en kugghjuls-knapp per delsteg öppnar en liten
+  editor. Avbockning med aktivt delsteg-intervall rullar bara det
+  delstegets datum framåt (ws_api.py:_roll_recurring_subtasks), oberoende
+  av uppgiftens egen återkommande-logik
 - [x] Påminnelser: en uppgift med tid (inte bara datum) på förfallodatumet
   skickar en mobilpush till den tilldelade personen om den fortfarande
   inte är avbockad när tiden är inne - en gång, via en person -> notify.*-
