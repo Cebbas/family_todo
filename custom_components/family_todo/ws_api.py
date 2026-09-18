@@ -355,17 +355,6 @@ async def ws_move_item(hass: HomeAssistant, connection, msg):
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/set_item_extra",
-        vol.Required("entry_id"): str,
-        vol.Required("uid"): str,
-        vol.Optional("assignee"): vol.Any(str, None),
-        vol.Optional("subtasks"): [SUBTASK_SCHEMA],
-        vol.Optional("section_id"): vol.Any(str, None),
-        vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
-    }
-)
 def _roll_recurring_subtasks(old_subtasks: list, new_subtasks: list) -> list:
     """Mirrors the item-level rollover in todo.py's async_update_todo_item,
     but per subtask instead of per item: a subtask with its own recurrence
@@ -399,6 +388,17 @@ def _roll_recurring_subtasks(old_subtasks: list, new_subtasks: list) -> list:
     return rolled
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/set_item_extra",
+        vol.Required("entry_id"): str,
+        vol.Required("uid"): str,
+        vol.Optional("assignee"): vol.Any(str, None),
+        vol.Optional("subtasks"): [SUBTASK_SCHEMA],
+        vol.Optional("section_id"): vol.Any(str, None),
+        vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
+    }
+)
 @websocket_api.async_response
 async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
     """Sparar delsteg, tilldelning, sektion och upprepning - utökningsdata, se store.py.
