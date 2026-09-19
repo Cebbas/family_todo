@@ -95,8 +95,19 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
   extra titel-prefix bedömdes onödigt.
 
 ## Robusthet
-- [ ] Repair-issue om en listas lagringsfil är korrupt, istället för att
-  bara tyst visa en tom lista
+- [x] ~~Repair-issue om en listas lagringsfil är korrupt~~ - redan löst av
+  HA-kärnan sedan en tidigare version, ingen egen kod behövs: `Store`
+  (homeassistant/helpers/storage.py) fångar redan JSONDecodeError,
+  byter namn på den oläsbara filen till `<nyckel>.corrupt.<tidsstämpel>`
+  bredvid originalet, faller tillbaka på tom data, och skapar själv en
+  `storage_corruption`-Repairs-issue (severity critical, is_fixable) som
+  namnger både originalfilen och säkerhetskopian. Testat live (2026-09-19,
+  slumpad testlista, filen skrevs över med ogiltig JSON och listans
+  config-entry laddades om) - allt ovanstående hände automatiskt utan att
+  family_todo behövde göra något. Byggde och deployade en egen version av
+  precis det här (försök `de3948f`, reverterad i `2b289d4`) innan
+  upptäckten - onödig kod som aldrig skulle nåtts, eftersom
+  `FamilyTodoStore.async_load` aldrig får se undantaget.
 - [x] Diagnostics-stöd (`diagnostics.py`) för att exportera
   felsökningsdata via HA:s inbyggda diagnostics-gränssnitt - en config-
   entry (lista) i taget: hela dess sparade data (uppgifter/sektioner/
