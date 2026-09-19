@@ -6,7 +6,6 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN, PLATFORMS
 from .panel import async_register_panel
@@ -57,7 +56,3 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     dess IDEAS.md "Robusthet"-avsnitt).
     """
     await FamilyTodoStore(hass, entry.entry_id).async_remove()
-    # A corrupt-storage Repairs issue (see todo.py:async_setup_entry) is
-    # keyed to this entry_id and would otherwise point at a list that no
-    # longer exists once it's deleted.
-    ir.async_delete_issue(hass, DOMAIN, f"corrupt_list_{entry.entry_id}")

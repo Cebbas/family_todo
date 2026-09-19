@@ -11,7 +11,6 @@ from homeassistant.components.todo import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -44,25 +43,6 @@ async def async_setup_entry(
 ) -> None:
     store = FamilyTodoStore(hass, entry.entry_id)
     await store.async_load()
-    if store.load_error:
-        # Surfaced instead of the list just silently coming up empty with
-        # no explanation - see FamilyTodoStore.async_load/
-        # _async_backup_corrupt_file in store.py for the backup this
-        # refers to. Not auto-cleared on a later clean load (see
-        # is_fixable=False) - it's a record that data *was* lost, which
-        # stays true even after the next start happens to load fine.
-        ir.async_create_issue(
-            hass,
-            DOMAIN,
-            f"corrupt_list_{entry.entry_id}",
-            is_fixable=False,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key="corrupt_list",
-            translation_placeholders={
-                "list_name": entry.title,
-                "error": store.load_error,
-            },
-        )
     entity = FamilyTodoListEntity(entry, store)
     hass.data[DOMAIN][entry.entry_id]["entity"] = entity
     async_add_entities([entity])
