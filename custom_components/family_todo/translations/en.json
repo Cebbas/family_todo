@@ -23,5 +23,11 @@
         "shopping": "Shopping list"
       }
     }
+  },
+  "issues": {
+    "corrupt_list": {
+      "title": "The list \"{list_name}\" could not be read",
+      "description": "Family Todo's storage file for the list \"{list_name}\" could not be read at startup ({error}) and has been reset to empty - any content it had is lost. A copy of the damaged file was saved in `.storage` (same folder, with a `.corrupt-` plus a timestamp added to the filename) in case you want to try recovering anything from it by hand."
+    }
   }
 }

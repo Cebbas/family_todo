@@ -37,16 +37,21 @@ rollover), so the next occurrence can be reminded about too.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
+import logging
+import shutil
 from typing import Any
 import uuid
 
 from dateutil.relativedelta import relativedelta
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
+from homeassistant.helpers.storage import STORAGE_DIR, Store
 
 from .const import STORAGE_KEY_PREFIX, STORAGE_VERSION
+
+_LOGGER = logging.getLogger(__name__)
 
 RECURRENCE_UNITS = ("days", "weeks", "months")
 
@@ -364,14 +369,48 @@ class FamilyTodoStore:
     """Persists one list's `TodoListData` in Home Assistant's own storage."""
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
+        self._hass = hass
         self._store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}{entry_id}")
         self._data: TodoListData | None = None
+        # Set by async_load() if the file existed but couldn't be parsed -
+        # __init__.py turns this into a Repairs issue instead of the list
+        # just silently coming up empty with no explanation. None once
+        # loaded cleanly (including "file never existed", a brand new
+        # list - that's not corruption).
+        self.load_error: str | None = None
 
     async def async_load(self) -> TodoListData:
-        if self._data is None:
+        if self._data is not None:
+            return self._data
+        try:
             raw = await self._store.async_load()
-            self._data = TodoListData.from_dict(raw)
+        except Exception as err:  # noqa: BLE001
+            # Store itself already retried/logged before giving up - by
+            # the time this raises, the file is genuinely unreadable
+            # (truncated write, disk corruption), not just "temporarily
+            # busy". Back the raw bytes up before anything overwrites
+            # them with a fresh empty file on the next save.
+            self.load_error = str(err)
+            await self._async_backup_corrupt_file()
+            raw = None
+        self._data = TodoListData.from_dict(raw)
         return self._data
+
+    async def _async_backup_corrupt_file(self) -> None:
+        """Best-effort copy of the unparseable file to a sibling
+        `.corrupt-<timestamp>` path, so the raw content isn't just gone
+        the moment this list is next saved (which overwrites it with a
+        fresh, valid-but-empty one). Never raises - a failed backup
+        shouldn't block recovering the list itself."""
+        src = Path(self._hass.config.path(STORAGE_DIR, self._store.key))
+        if not src.exists():
+            return
+        dest = src.with_name(f"{src.name}.corrupt-{datetime.now():%Y%m%dT%H%M%S}")
+        try:
+            await self._hass.async_add_executor_job(shutil.copy2, src, dest)
+            _LOGGER.warning("Sparade en kopia av den skadade listfilen till %s", dest)
+        except OSError as copy_err:
+            _LOGGER.warning("Kunde inte säkerhetskopiera skadad listfil %s: %s", src, copy_err)
 
     async def async_save(self) -> None:
         if self._data is not None:

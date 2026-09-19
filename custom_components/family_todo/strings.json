@@ -23,5 +23,11 @@
         "shopping": "Inköpslista"
       }
     }
+  },
+  "issues": {
+    "corrupt_list": {
+      "title": "Listan \"{list_name}\" gick inte att läsa",
+      "description": "Family Todos lagringsfil för listan \"{list_name}\" gick inte att läsa vid start ({error}) och har återställts som tom - allt innehåll som fanns i den är förlorat. En kopia av den skadade filen sparades i `.storage` (samma mapp, med `.corrupt-` och ett tidsstämplat suffix i filnamnet) om du vill försöka återskapa något av innehållet för hand."
+    }
   }
 }

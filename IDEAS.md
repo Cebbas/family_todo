@@ -95,8 +95,14 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
   extra titel-prefix bedömdes onödigt.
 
 ## Robusthet
-- [ ] Repair-issue om en listas lagringsfil är korrupt, istället för att
-  bara tyst visa en tom lista
+- [x] Repair-issue om en listas lagringsfil är korrupt, istället för att
+  bara tyst visa en tom lista - `FamilyTodoStore.async_load` fångar
+  undantaget, säkerhetskopierar den oläsbara filen till en `.corrupt-
+  <tidsstämpel>`-fil bredvid originalet, och faller tillbaka på en tom
+  (men giltig) lista. `todo.py` skapar då en Repairs-issue
+  (`corrupt_list`, `is_fixable=False` - den ska stå kvar tills man
+  medvetet avfärdar den, inte försvinna av sig själv nästa gång listan
+  råkar ladda rent) som pekar ut listan och den säkerhetskopierade filen.
 - [x] Diagnostics-stöd (`diagnostics.py`) för att exportera
   felsökningsdata via HA:s inbyggda diagnostics-gränssnitt - en config-
   entry (lista) i taget: hela dess sparade data (uppgifter/sektioner/
