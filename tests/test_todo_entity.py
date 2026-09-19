@@ -10,7 +10,13 @@ from homeassistant.components.todo import TodoItem, TodoItemStatus
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.family_todo.const import DOMAIN
+from custom_components.family_todo.const import (
+    CONF_LIST_TYPE,
+    DEFAULT_ICON,
+    DEFAULT_SHOPPING_ICON,
+    DOMAIN,
+    LIST_TYPE_SHOPPING,
+)
 from custom_components.family_todo.store import FamilyTodoStore, Recurrence, Subtask
 from custom_components.family_todo.todo import FamilyTodoListEntity
 
@@ -259,3 +265,19 @@ async def test_unrelated_update_preserves_reminder_sent_when_due_unchanged(hass)
     )
 
     assert entity._model().get(uid).reminder_sent is True
+
+
+async def test_default_icon_is_shopping_cart_for_shopping_list(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN, entry_id="cart1", data={"name": "Mat", CONF_LIST_TYPE: LIST_TYPE_SHOPPING}
+    )
+    store = FamilyTodoStore(hass, "cart1")
+    await store.async_load()
+    entity = FamilyTodoListEntity(entry, store)
+    assert entity.icon == DEFAULT_SHOPPING_ICON
+
+
+async def test_default_icon_is_regular_for_task_list(hass):
+    entity = await _make_entity(hass, entry_id="tasks1")
+    assert entity.icon == DEFAULT_ICON
+

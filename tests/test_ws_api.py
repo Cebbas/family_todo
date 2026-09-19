@@ -7,7 +7,7 @@ from homeassistant.helpers import floor_registry as fr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.family_todo import ws_api
-from custom_components.family_todo.const import CONF_NAME, CONF_OWNER_USER_ID, DOMAIN
+from custom_components.family_todo.const import CONF_LIST_TYPE, CONF_NAME, CONF_OWNER_USER_ID, DOMAIN
 from custom_components.family_todo.store import FamilyTodoStore, Section
 from custom_components.family_todo.todo import FamilyTodoListEntity
 
@@ -417,3 +417,17 @@ async def test_child_blocked_from_copying_into_another_persons_list(hass):
     assert connection.error is not None
     assert connection.error[0] == "unauthorized"
     assert len(entity.todo_items) == 1  # ingen kopia skapades
+
+
+def test_entry_to_dict_defaults_list_type_to_tasks_for_older_entries():
+    """A list created before the shopping-list feature existed has no
+    list_type in its stored data at all - must read back as "tasks", not
+    None, so the panel's field-visibility check (`list.list_type !==
+    "shopping"`) still shows the full task editor for it."""
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_NAME: "Hushåll"})
+    assert ws_api._entry_to_dict(entry)["list_type"] == "tasks"
+
+
+def test_entry_to_dict_reads_shopping_list_type():
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_NAME: "Mat", CONF_LIST_TYPE: "shopping"})
+    assert ws_api._entry_to_dict(entry)["list_type"] == "shopping"

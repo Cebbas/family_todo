@@ -39,6 +39,28 @@
   idén nedan under Sysslor - gäller alla uppgifter med tid, inte bara
   återkommande sysslor.
 
+## Inköpslistor (v0.5)
+- [x] Egen listtyp (`list_type`: `tasks`/`shopping`, `const.py`) - inte en
+  separat datamodell eller egen entitetsklass, samma `todo.*`-entitet och
+  `FamilyTodoStore` som en vanlig lista, bara en flagga på config entryn
+  som styr vad panelen visar. Väljs vid listskapande (sidopanelens
+  "Ny lista"-kort och det vanliga config-flow-formuläret), redigerbar i
+  efterhand via `update_list`.
+- [x] Egen ikon (kundvagn, `mdi:cart`) som förval på en Inköp-lista,
+  används både i flikraden och listkortets header om ingen egen ikon
+  satts.
+- [x] Snabbare, enklare uppgiftsformulär för Inköp-listor: `_renderItemDetail`
+  hoppar helt över förfallodatum, tilldelning, återkommande och delsteg -
+  bara sektion (om listan har några - funkar fint som hylla-/butik-
+  gruppering utan att kräva en egen kategori-funktion) och kopiera-till-
+  rum blir kvar. Lägg-till-raden var redan minimal (titel + valfri
+  sektion + Enter-för-att-lägga-till) och behövde ingen ändring.
+- [ ] Kvantitet/mängd per vara som eget fält (avvaktande - fritext i
+  titeln, t.ex. "Mjölk x2", funkar redan) - inte byggt än, ingen bad om
+  det specifikt när detta byggdes.
+- [ ] Förvalda kategorier (mejeri, frukt/grönt, ...) istället för att
+  återanvända den generiska sektions-funktionen manuellt - inte byggt än.
+
 ## Sysslor/chores med tilldelning och rotation (delvis påbörjat)
 Ursprungligen ett alternativt scope för hela integrationen – landade
 istället som en idé att bygga ovanpå v0.1 istället för att vara grunden,

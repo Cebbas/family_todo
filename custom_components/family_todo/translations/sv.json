@@ -6,6 +6,7 @@
         "description": "Family Todo skapar en riktig todo-lista som fungerar med Home Assistants eget todo-kort och röstassistent (Assist). Fler listor lägger du enklast till direkt i sidopanelen.",
         "data": {
           "name": "Namn",
+          "list_type": "Listtyp",
           "icon": "Ikon",
           "color": "Färg"
         }
@@ -13,6 +14,14 @@
     },
     "error": {
       "name_required": "Namn krävs"
+    }
+  },
+  "selector": {
+    "list_type": {
+      "options": {
+        "tasks": "Att göra-lista",
+        "shopping": "Inköpslista"
+      }
     }
   }
 }

@@ -14,7 +14,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_COLOR, CONF_ICON, CONF_NAME, DEFAULT_ICON, DOMAIN
+from .const import (
+    CONF_COLOR,
+    CONF_ICON,
+    CONF_LIST_TYPE,
+    CONF_NAME,
+    DEFAULT_ICON,
+    DEFAULT_SHOPPING_ICON,
+    DOMAIN,
+    LIST_TYPE_SHOPPING,
+)
 from .store import FamilyTodoStore, Subtask, TodoItemData, combine_description, split_description
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,7 +68,10 @@ class FamilyTodoListEntity(TodoListEntity):
         self._store = store
         self._attr_unique_id = entry.entry_id
         self._attr_name = entry.data.get(CONF_NAME, entry.title)
-        self._attr_icon = entry.data.get(CONF_ICON) or DEFAULT_ICON
+        default_icon = (
+            DEFAULT_SHOPPING_ICON if entry.data.get(CONF_LIST_TYPE) == LIST_TYPE_SHOPPING else DEFAULT_ICON
+        )
+        self._attr_icon = entry.data.get(CONF_ICON) or default_icon
         self._attr_supported_features = _SUPPORTED_FEATURES
 
     @property

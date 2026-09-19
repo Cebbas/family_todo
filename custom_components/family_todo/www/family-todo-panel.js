@@ -76,6 +76,10 @@ class FamilyTodoPanel extends HTMLElement {
         button.danger { background: var(--error-color, #db4437); color: white; }
         button.text { background: none; color: var(--primary-color); padding: 4px 8px; }
         button:disabled { opacity: .4; cursor: default; }
+        button.ft-type-choice { display: flex; align-items: center; gap: 6px; background: transparent;
+          color: var(--secondary-text-color); border: 1px solid var(--divider-color, #ccc); }
+        button.ft-type-choice.active { background: var(--primary-color); color: var(--text-primary-color, white);
+          border-color: var(--primary-color); }
         .ft-item { border-bottom: 1px solid var(--divider-color, #eee); padding: 8px 0; }
         .ft-item:last-child { border-bottom: none; }
         .ft-item-row { display: flex; align-items: center; gap: 8px; }
@@ -255,7 +259,7 @@ class FamilyTodoPanel extends HTMLElement {
     for (const list of this._lists) {
       const btn = document.createElement("button");
       btn.className = "ft-tab" + (this._activeListId === list.entry_id ? " active" : "");
-      btn.innerHTML = `<ha-icon icon="${list.icon || "mdi:format-list-checks"}"></ha-icon>`;
+      btn.innerHTML = `<ha-icon icon="${list.icon || _defaultListIcon(list)}"></ha-icon>`;
       btn.append(list.name);
       btn.addEventListener("click", async () => {
         this._activeListId = list.entry_id;
@@ -382,13 +386,33 @@ class FamilyTodoPanel extends HTMLElement {
       <div class="ft-card-header"><ha-icon icon="mdi:plus"></ha-icon>
         <input type="text" class="ft-name" id="new-name" placeholder="Namn på ny lista, t.ex. Inköp" />
       </div>
+      <div class="ft-row" id="new-type-row">
+        <button type="button" class="ft-type-choice active" data-type="tasks">
+          <ha-icon icon="mdi:format-list-checks"></ha-icon> Att göra
+        </button>
+        <button type="button" class="ft-type-choice" data-type="shopping">
+          <ha-icon icon="mdi:cart"></ha-icon> Inköp
+        </button>
+      </div>
       <div class="ft-actions"><button id="new-create">Skapa lista</button></div>
     `;
+    let listType = "tasks";
+    const typeRow = card.querySelector("#new-type-row");
+    typeRow.querySelectorAll(".ft-type-choice").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        listType = btn.dataset.type;
+        typeRow.querySelectorAll(".ft-type-choice").forEach((b) => b.classList.toggle("active", b === btn));
+      });
+    });
     card.querySelector("#new-create").addEventListener("click", async () => {
       const nameInput = card.querySelector("#new-name");
       const name = nameInput.value.trim();
       if (!name) return;
-      const { entry_id } = await this._hass.callWS({ type: "family_todo/create_list", name });
+      const { entry_id } = await this._hass.callWS({
+        type: "family_todo/create_list",
+        name,
+        list_type: listType,
+      });
       this._activeListId = entry_id;
       await this._reloadLists();
     });
@@ -442,7 +466,7 @@ class FamilyTodoPanel extends HTMLElement {
 
     const header = document.createElement("div");
     header.className = "ft-card-header";
-    header.innerHTML = `<ha-icon icon="${list.icon || "mdi:format-list-checks"}"></ha-icon>
+    header.innerHTML = `<ha-icon icon="${list.icon || _defaultListIcon(list)}"></ha-icon>
       <input type="text" class="ft-name" value="${_esc(list.name)}" />`;
     const nameInput = header.querySelector("input");
     nameInput.addEventListener("change", async () => {
@@ -480,6 +504,31 @@ class FamilyTodoPanel extends HTMLElement {
       })
     );
     header.appendChild(ownerRow);
+
+    const typeRow = document.createElement("div");
+    typeRow.className = "ft-row";
+    const typeLabel = document.createElement("span");
+    typeLabel.textContent = "Typ: ";
+    typeLabel.style.fontSize = "13px";
+    typeLabel.style.color = "var(--secondary-text-color)";
+    typeRow.appendChild(typeLabel);
+    const typeSelect = document.createElement("select");
+    typeSelect.innerHTML = `<option value="tasks">Att göra</option><option value="shopping">Inköp</option>`;
+    typeSelect.value = list.list_type === "shopping" ? "shopping" : "tasks";
+    typeSelect.addEventListener("change", async () => {
+      await this._hass.callWS({
+        type: "family_todo/update_list",
+        entry_id: list.entry_id,
+        name: list.name,
+        list_type: typeSelect.value,
+        icon: list.icon,
+        color: list.color,
+        owner_user_id: list.owner_user_id,
+      });
+      await this._reloadLists();
+    });
+    typeRow.appendChild(typeSelect);
+    header.appendChild(typeRow);
 
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "danger";
@@ -1168,79 +1217,86 @@ class FamilyTodoPanel extends HTMLElement {
       detail.appendChild(sectionRow);
     }
 
-    detail.appendChild(this._renderDueEditor(list, item));
+    // Due date, assignee, recurrence and subtasks are all task-list
+    // concepts that don't apply to a shopping item ("2 liter mjölk"
+    // doesn't need a deadline or an assignee) - a shopping-type list skips
+    // straight from section to the copy-to-room picker below, keeping the
+    // faster add/check-off flow the list type is for.
+    if (list.list_type !== "shopping") {
+      detail.appendChild(this._renderDueEditor(list, item));
 
-    const assigneeRow = document.createElement("div");
-    assigneeRow.className = "ft-row";
-    const select = document.createElement("select");
-    select.innerHTML = `<option value="">Ingen tilldelad</option>` +
-      this._persons.map((p) => `<option value="${_esc(p.name)}">${_esc(p.name)}</option>`).join("") +
-      `<option value="__custom__">Annat namn...</option>`;
-    const currentIsPerson = this._persons.some((p) => p.name === item.assignee);
-    if (item.assignee && !currentIsPerson) {
-      select.innerHTML += `<option value="${_esc(item.assignee)}" selected>${_esc(item.assignee)}</option>`;
-    } else {
-      select.value = item.assignee || "";
-    }
-    select.addEventListener("change", async () => {
-      let assignee = select.value;
-      if (assignee === "__custom__") {
-        assignee = prompt("Namn:", "") || "";
+      const assigneeRow = document.createElement("div");
+      assigneeRow.className = "ft-row";
+      const select = document.createElement("select");
+      select.innerHTML = `<option value="">Ingen tilldelad</option>` +
+        this._persons.map((p) => `<option value="${_esc(p.name)}">${_esc(p.name)}</option>`).join("") +
+        `<option value="__custom__">Annat namn...</option>`;
+      const currentIsPerson = this._persons.some((p) => p.name === item.assignee);
+      if (item.assignee && !currentIsPerson) {
+        select.innerHTML += `<option value="${_esc(item.assignee)}" selected>${_esc(item.assignee)}</option>`;
+      } else {
+        select.value = item.assignee || "";
       }
-      await this._hass.callWS({
-        type: "family_todo/set_item_extra",
-        entry_id: list.entry_id,
-        uid: item.uid,
-        assignee,
+      select.addEventListener("change", async () => {
+        let assignee = select.value;
+        if (assignee === "__custom__") {
+          assignee = prompt("Namn:", "") || "";
+        }
+        await this._hass.callWS({
+          type: "family_todo/set_item_extra",
+          entry_id: list.entry_id,
+          uid: item.uid,
+          assignee,
+        });
+        await this._reloadItems(list.entry_id);
+        this._render();
       });
-      await this._reloadItems(list.entry_id);
-      this._render();
-    });
-    assigneeRow.innerHTML = `<span>Tilldelad:</span>`;
-    assigneeRow.appendChild(select);
-    detail.appendChild(assigneeRow);
+      assigneeRow.innerHTML = `<span>Tilldelad:</span>`;
+      assigneeRow.appendChild(select);
+      detail.appendChild(assigneeRow);
 
-    detail.appendChild(this._renderRecurrenceEditor(list, item));
+      detail.appendChild(this._renderRecurrenceEditor(list, item));
 
-    const subtasksTitle = document.createElement("div");
-    subtasksTitle.className = "ft-row";
-    subtasksTitle.innerHTML = `<span>Delsteg:</span>`;
-    detail.appendChild(subtasksTitle);
+      const subtasksTitle = document.createElement("div");
+      subtasksTitle.className = "ft-row";
+      subtasksTitle.innerHTML = `<span>Delsteg:</span>`;
+      detail.appendChild(subtasksTitle);
 
-    const saveSubtasks = async (subtasks) => {
-      await this._hass.callWS({
-        type: "family_todo/set_item_extra",
-        entry_id: list.entry_id,
-        uid: item.uid,
-        subtasks,
+      const saveSubtasks = async (subtasks) => {
+        await this._hass.callWS({
+          type: "family_todo/set_item_extra",
+          entry_id: list.entry_id,
+          uid: item.uid,
+          subtasks,
+        });
+        await this._reloadItems(list.entry_id);
+        this._render();
+      };
+
+      for (const sub of item.subtasks) {
+        detail.appendChild(this._renderSubtaskEditRow(item, sub, saveSubtasks));
+      }
+
+      const addSubRow = document.createElement("div");
+      addSubRow.className = "ft-row";
+      addSubRow.innerHTML = `<input type="text" placeholder="Nytt delsteg..." />`;
+      const addSubInput = addSubRow.querySelector("input");
+      const addSubBtn = document.createElement("button");
+      addSubBtn.className = "secondary";
+      addSubBtn.textContent = "Lägg till";
+      const doAddSub = () => {
+        const summary = addSubInput.value.trim();
+        if (!summary) return;
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        saveSubtasks([...item.subtasks, { id, summary, complete: false }]);
+      };
+      addSubBtn.addEventListener("click", doAddSub);
+      addSubInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") doAddSub();
       });
-      await this._reloadItems(list.entry_id);
-      this._render();
-    };
-
-    for (const sub of item.subtasks) {
-      detail.appendChild(this._renderSubtaskEditRow(item, sub, saveSubtasks));
+      addSubRow.appendChild(addSubBtn);
+      detail.appendChild(addSubRow);
     }
-
-    const addSubRow = document.createElement("div");
-    addSubRow.className = "ft-row";
-    addSubRow.innerHTML = `<input type="text" placeholder="Nytt delsteg..." />`;
-    const addSubInput = addSubRow.querySelector("input");
-    const addSubBtn = document.createElement("button");
-    addSubBtn.className = "secondary";
-    addSubBtn.textContent = "Lägg till";
-    const doAddSub = () => {
-      const summary = addSubInput.value.trim();
-      if (!summary) return;
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      saveSubtasks([...item.subtasks, { id, summary, complete: false }]);
-    };
-    addSubBtn.addEventListener("click", doAddSub);
-    addSubInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") doAddSub();
-    });
-    addSubRow.appendChild(addSubBtn);
-    detail.appendChild(addSubRow);
 
     // Kopiera till andra rum - bara meningsfullt om listan har fler än en
     // sektion att kopiera till, se _renderCopyPicker.
@@ -1266,6 +1322,10 @@ function _formatDue(due) {
   const datePart = d.toLocaleDateString("sv-SE");
   if (!hasTime) return datePart;
   return `${datePart} ${d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function _defaultListIcon(list) {
+  return list.list_type === "shopping" ? "mdi:cart" : "mdi:format-list-checks";
 }
 
 function _esc(str) {

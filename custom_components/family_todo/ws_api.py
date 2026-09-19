@@ -14,7 +14,15 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_COLOR, CONF_ICON, CONF_NAME, CONF_OWNER_USER_ID, DOMAIN
+from .const import (
+    CONF_COLOR,
+    CONF_ICON,
+    CONF_LIST_TYPE,
+    CONF_NAME,
+    CONF_OWNER_USER_ID,
+    DOMAIN,
+    LIST_TYPE_TASKS,
+)
 from .notify_map import async_get_notify_map_store
 from .permissions import async_is_adult
 from .store import (
@@ -48,6 +56,7 @@ def _entry_to_dict(entry) -> dict:
     return {
         "entry_id": entry.entry_id,
         "name": entry.data.get(CONF_NAME, entry.title),
+        "list_type": entry.data.get(CONF_LIST_TYPE, LIST_TYPE_TASKS),
         "icon": entry.data.get(CONF_ICON),
         "color": entry.data.get(CONF_COLOR),
         "owner_user_id": entry.data.get(CONF_OWNER_USER_ID),
@@ -142,6 +151,7 @@ async def ws_list_lists(hass: HomeAssistant, connection, msg):
     {
         vol.Required("type"): f"{DOMAIN}/create_list",
         vol.Required("name"): str,
+        vol.Optional("list_type", default=LIST_TYPE_TASKS): str,
         vol.Optional("icon"): vol.Any(str, None),
         vol.Optional("color"): vol.Any(str, None),
         vol.Optional("owner_user_id"): vol.Any(str, None),
@@ -158,6 +168,7 @@ async def ws_create_list(hass: HomeAssistant, connection, msg):
         context={"source": "create_list"},
         data={
             "name": name,
+            "list_type": msg.get("list_type", LIST_TYPE_TASKS),
             "icon": msg.get("icon"),
             "color": msg.get("color"),
             "owner_user_id": msg.get("owner_user_id"),
@@ -174,6 +185,7 @@ async def ws_create_list(hass: HomeAssistant, connection, msg):
         vol.Required("type"): f"{DOMAIN}/update_list",
         vol.Required("entry_id"): str,
         vol.Required("name"): str,
+        vol.Optional("list_type"): vol.Any(str, None),
         vol.Optional("icon"): vol.Any(str, None),
         vol.Optional("color"): vol.Any(str, None),
         vol.Optional("owner_user_id"): vol.Any(str, None),
@@ -194,6 +206,7 @@ async def ws_update_list(hass: HomeAssistant, connection, msg):
         data={
             **entry.data,
             CONF_NAME: name,
+            CONF_LIST_TYPE: msg.get("list_type") or entry.data.get(CONF_LIST_TYPE, LIST_TYPE_TASKS),
             CONF_ICON: msg.get("icon"),
             CONF_COLOR: msg.get("color"),
             CONF_OWNER_USER_ID: msg.get("owner_user_id"),

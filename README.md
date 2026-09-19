@@ -26,6 +26,13 @@ Skapar riktiga att-göra-listor i Home Assistant:
   **mobilpush-påminnelse** skickad till den tilldelade personen om
   uppgiften fortfarande inte är avbockad när tiden är inne – se
   "Påminnelser" nedan
+- välj **listtyp** när du skapar en lista: en vanlig **Att göra**-lista
+  (allt ovan) eller en **Inköpslista** – samma sorts `todo.*`-entitet
+  under huven, men panelen hoppar över förfallodatum, tilldelning,
+  återkommande och delsteg för den, så lägg-till/bocka-av-flödet blir
+  snabbare när du står i butiken. Sektioner funkar fortfarande, praktiskt
+  som hylla-/butiksgruppering. Byt typ i efterhand genom att döpa om/
+  redigera listan i panelen.
 
 ## Känd begränsning: delsteg och tilldelning syns bara i panelen
 

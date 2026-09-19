@@ -19,12 +19,30 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import selector
 
-from .const import CONF_COLOR, CONF_ICON, CONF_NAME, CONF_OWNER_USER_ID, DEFAULT_ICON, DOMAIN
+from .const import (
+    CONF_COLOR,
+    CONF_ICON,
+    CONF_LIST_TYPE,
+    CONF_NAME,
+    CONF_OWNER_USER_ID,
+    DEFAULT_ICON,
+    DOMAIN,
+    LIST_TYPE_TASKS,
+    LIST_TYPES,
+)
 
 _USER_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_NAME): str,
+        vol.Optional(CONF_LIST_TYPE, default=LIST_TYPE_TASKS): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=LIST_TYPES,
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                translation_key=CONF_LIST_TYPE,
+            )
+        ),
         vol.Optional(CONF_ICON, default=DEFAULT_ICON): str,
         vol.Optional(CONF_COLOR): str,
         # Ägaren sätts i praktiken via panelen (ws_update_list) efter att
@@ -55,6 +73,7 @@ class FamilyTodoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     title=name,
                     data={
                         CONF_NAME: name,
+                        CONF_LIST_TYPE: user_input.get(CONF_LIST_TYPE, LIST_TYPE_TASKS),
                         CONF_ICON: user_input.get(CONF_ICON) or DEFAULT_ICON,
                         CONF_COLOR: user_input.get(CONF_COLOR),
                         CONF_OWNER_USER_ID: user_input.get(CONF_OWNER_USER_ID),
@@ -69,6 +88,7 @@ class FamilyTodoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             title=name,
             data={
                 CONF_NAME: name,
+                CONF_LIST_TYPE: user_input.get(CONF_LIST_TYPE, LIST_TYPE_TASKS),
                 CONF_ICON: user_input.get(CONF_ICON) or DEFAULT_ICON,
                 CONF_COLOR: user_input.get(CONF_COLOR),
                 CONF_OWNER_USER_ID: user_input.get(CONF_OWNER_USER_ID),

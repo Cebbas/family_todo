@@ -11,7 +11,18 @@ CONF_COLOR = "color"
 # opåverkade.
 CONF_OWNER_USER_ID = "owner_user_id"
 
+# What kind of list this is - changes which fields the panel shows on an
+# item (tasks: full editor with assignee/due/recurrence/subtasks; shopping:
+# just title + section, a faster add/check-off flow for standing in a
+# store). Purely a panel-UI/default-icon distinction - both are ordinary
+# todo.* entities underneath, same store/CRUD either way.
+CONF_LIST_TYPE = "list_type"
+LIST_TYPE_TASKS = "tasks"
+LIST_TYPE_SHOPPING = "shopping"
+LIST_TYPES = [LIST_TYPE_TASKS, LIST_TYPE_SHOPPING]
+
 DEFAULT_ICON = "mdi:format-list-checks"
+DEFAULT_SHOPPING_ICON = "mdi:cart"
 
 PLATFORMS = ["todo"]
 
