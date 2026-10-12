@@ -133,6 +133,15 @@ att den bara blir kvar som avklarad:
 3. Eventuella delsteg nollställs, så nästa omgång börjar med en tom
    checklista
 
+Varje sådan avbockning sparas i uppgiftens **Historik** (i redigeringsvyn):
+när den gjordes, av vem och om det var i tid eller hur många dagar sent.
+Samma sak gäller återkommande delsteg.
+
+Återkommande uppgifter som har mer än 20 % av intervallet kvar till nästa
+förfallodatum flyttas till en hopfälld grupp **Kommande** längst ner i sin
+sektion, så att det som är aktuellt nu syns först. En veckouppgift hamnar
+alltså där tills ungefär 1,4 dagar återstår.
+
 Att bocka **ur** en redan avklarad uppgift (ångra) rullar inte vidare –
 bara den faktiska övergången till "klar" gör det. Stäng av "Återkommande"
 igen för att göra uppgiften till en vanlig engångsuppgift.

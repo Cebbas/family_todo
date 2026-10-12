@@ -27,8 +27,10 @@ from .const import (
 )
 from .notify_map import async_get_notify_map_store
 from .permissions import async_is_adult
+from .todo import async_user_display_name
 from .store import (
     RECURRENCE_UNITS,
+    CompletionLogEntry,
     FamilyTodoStore,
     Recurrence,
     Section,
@@ -86,6 +88,7 @@ def _item_to_dict(item) -> dict:
         "last_completed": item.last_completed,
         "reminder_sent": item.reminder_sent,
         "quantity": item.quantity,
+        "completion_log": [e.to_dict() for e in item.completion_log],
     }
 
 
@@ -110,6 +113,37 @@ def _parse_due(value: str | None):
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _set_context(entity, connection, msg: dict) -> None:
+    """Låter entiteten veta vem som gjorde anropet - för återkommande-loggens "av"."""
+    context = getattr(connection, "context", None)
+    if callable(context):
+        entity.async_set_context(context(msg))
+
+
+def _user_id(connection) -> str | None:
+    return connection.user.id if getattr(connection, "user", None) else None
+
+
+async def _log_rolled_subtasks(hass, connection, item, old_subtasks, new_subtasks) -> None:
+    """Loggar återkommande delsteg som just bockats av (och därför rullar vidare)."""
+    old_by_id = {s.id: s for s in old_subtasks}
+    by = None
+    for sub in new_subtasks:
+        old = old_by_id.get(sub.id)
+        if old is None or old.complete or not sub.complete or sub.recurrence is None:
+            continue
+        if by is None:
+            by = await async_user_display_name(hass, _user_id(connection)) or ""
+        item.log_completion(
+            CompletionLogEntry(
+                at=dt_util.now().isoformat(timespec="minutes"),
+                due=old.due,
+                by=by or None,
+                subtask=sub.summary,
+            )
+        )
 
 
 def _get_entity(hass: HomeAssistant, entry_id: str):
@@ -336,6 +370,7 @@ async def ws_update_item(hass: HomeAssistant, connection, msg):
         return
     if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
         return
+    _set_context(entity, connection, msg)
     await entity.async_update_todo_item(
         TodoItem(
             uid=msg["uid"],
@@ -468,9 +503,9 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
     if "assignee" in msg:
         changes["assignee"] = msg["assignee"]
     if "subtasks" in msg:
-        changes["subtasks"] = _roll_recurring_subtasks(
-            item.subtasks, [Subtask.from_dict(s) for s in msg["subtasks"]]
-        )
+        submitted = [Subtask.from_dict(s) for s in msg["subtasks"]]
+        await _log_rolled_subtasks(hass, connection, item, item.subtasks, submitted)
+        changes["subtasks"] = _roll_recurring_subtasks(item.subtasks, submitted)
     if "section_id" in msg:
         changes["section_id"] = msg["section_id"]
     if "recurrence" in msg:
@@ -770,6 +805,7 @@ async def ws_complete_item(hass: HomeAssistant, connection, msg):
     if item is None:
         connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")
         return
+    _set_context(entity, connection, msg)
     await entity.async_update_todo_item(
         TodoItem(
             uid=item.uid,
@@ -811,6 +847,7 @@ async def ws_complete_subtask(hass: HomeAssistant, connection, msg):
         else s
         for s in item.subtasks
     ]
+    await _log_rolled_subtasks(hass, connection, item, item.subtasks, updated)
     subtasks = _roll_recurring_subtasks(item.subtasks, updated)
     model.update(
         item.uid,

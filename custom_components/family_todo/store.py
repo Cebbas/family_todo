@@ -59,6 +59,9 @@ _LOGGER = logging.getLogger(__name__)
 
 RECURRENCE_UNITS = ("days", "weeks", "months")
 
+# Hur många utförda tillfällen som sparas per uppgift - äldsta faller bort.
+COMPLETION_LOG_MAX = 100
+
 
 @dataclass
 class Subtask:
@@ -156,6 +159,31 @@ class Recurrence:
 
 
 @dataclass
+class CompletionLogEntry:
+    """Ett utfört tillfälle av en återkommande uppgift (eller ett av dess delsteg).
+
+    Skrivs när en återkommande uppgift/delsteg bockas av och rullar vidare
+    (todo.py:async_update_todo_item, ws_api.py för delsteg) - annars finns
+    inget spår kvar av att den gjorts, eftersom den direkt öppnas igen.
+    `due` är förfallodatumet som gällde för just det tillfället, så panelen
+    kan visa om det gjordes i tid. `subtask` är delstegets namn om det var
+    ett delsteg som bockades av, annars None.
+    """
+
+    at: str  # ISO datetime (lokal tid) för avbockningen
+    due: str | None = None
+    by: str | None = None
+    subtask: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"at": self.at, "due": self.due, "by": self.by, "subtask": self.subtask}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CompletionLogEntry":
+        return cls(at=data["at"], due=data.get("due"), by=data.get("by"), subtask=data.get("subtask"))
+
+
+@dataclass
 class TodoItemData:
     """A todo item plus the extension fields the HA `todo` platform can't hold."""
 
@@ -171,6 +199,7 @@ class TodoItemData:
     last_completed: str | None = None  # ISO date of the last time this was checked off
     reminder_sent: bool = False  # se reminders.py - nollställs varje gång `due` ändras
     quantity: str | None = None  # fritext, t.ex. "2" eller "500 g" - mest för inköpslistor
+    completion_log: list[CompletionLogEntry] = field(default_factory=list)  # äldst först
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -186,6 +215,7 @@ class TodoItemData:
             "last_completed": self.last_completed,
             "reminder_sent": self.reminder_sent,
             "quantity": self.quantity,
+            "completion_log": [e.to_dict() for e in self.completion_log],
         }
 
     @classmethod
@@ -204,7 +234,12 @@ class TodoItemData:
             last_completed=data.get("last_completed"),
             reminder_sent=bool(data.get("reminder_sent", False)),
             quantity=data.get("quantity"),
+            completion_log=[CompletionLogEntry.from_dict(e) for e in data.get("completion_log") or []],
         )
+
+    def log_completion(self, entry: CompletionLogEntry) -> None:
+        """Lägger till ett utfört tillfälle och kapar loggen till COMPLETION_LOG_MAX."""
+        self.completion_log = [*self.completion_log, entry][-COMPLETION_LOG_MAX:]
 
     @property
     def subtask_progress(self) -> tuple[int, int]:

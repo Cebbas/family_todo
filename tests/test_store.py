@@ -348,3 +348,20 @@ def test_from_dict_wrong_top_level_types_reported_not_raised():
 def test_from_dict_clean_data_has_no_load_errors():
     assert TodoListData.from_dict({"items": {}, "order": []}).load_errors == []
     assert TodoListData.from_dict(None).load_errors == []
+
+
+# ---- completion log ----
+
+def test_completion_log_round_trips_and_is_capped():
+    from custom_components.family_todo.store import COMPLETION_LOG_MAX, CompletionLogEntry
+
+    item = _item(uid="x")
+    for n in range(COMPLETION_LOG_MAX + 5):
+        item.log_completion(CompletionLogEntry(at=f"2026-01-01T00:{n % 60:02d}", due="2026-01-01", by="Naomi"))
+    assert len(item.completion_log) == COMPLETION_LOG_MAX
+    restored = TodoItemData.from_dict(item.to_dict())
+    assert restored.completion_log == item.completion_log
+
+
+def test_completion_log_missing_in_old_data_defaults_empty():
+    assert TodoItemData.from_dict({"uid": "x", "summary": "Gammal"}).completion_log == []

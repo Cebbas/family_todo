@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.components.todo import (
     TodoItem,
@@ -25,7 +26,14 @@ from .const import (
     LIST_TYPE_SHOPPING,
 )
 from .categories import guess_section_id
-from .store import FamilyTodoStore, Subtask, TodoItemData, combine_description, split_description
+from .store import (
+    CompletionLogEntry,
+    FamilyTodoStore,
+    Subtask,
+    TodoItemData,
+    combine_description,
+    split_description,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -162,6 +170,13 @@ class FamilyTodoListEntity(TodoListEntity):
                 Subtask(id=s.id, summary=s.summary, complete=False, recurrence=s.recurrence)
                 for s in existing.subtasks
             ]
+            existing.log_completion(
+                CompletionLogEntry(
+                    at=dt_util.now().isoformat(timespec="minutes"),
+                    due=existing.due,
+                    by=await async_user_display_name(self.hass, self._recent_user_id()),
+                )
+            )
             model.update(
                 item.uid,
                 summary=item.summary,
@@ -201,10 +216,36 @@ class FamilyTodoListEntity(TodoListEntity):
         await self._store.async_save()
         self.async_write_ha_state()
 
+    def _recent_user_id(self) -> str | None:
+        """Vem som utförde det pågående anropet, om HA (eller ws_api.py) satt en context.
+
+        HA:s egna todo-tjänster (todo-kortet, röstassistenten) sätter
+        entitetens context innan de anropar oss; panelens ws-anrop gör
+        detsamma via ws_api.py:_set_context. Samma "nyligen satt"-gräns som
+        HA själv använder (CONTEXT_RECENT_TIME_SECONDS) så en gammal context
+        aldrig tillskrivs en senare automation.
+        """
+        if self._context is None or self._context_set is None:
+            return None
+        if time.time() - self._context_set > 5:
+            return None
+        return self._context.user_id
+
     async def async_will_remove_from_hass(self) -> None:
         entry_data = self.hass.data.get(DOMAIN, {}).get(self._entry.entry_id)
         if entry_data is not None:
             entry_data.pop("entity", None)
+
+
+async def async_user_display_name(hass: HomeAssistant, user_id: str | None) -> str | None:
+    """Namn att visa i loggen för ett HA-konto - personens namn om kontot hör till en person.*."""
+    if not user_id:
+        return None
+    for state in hass.states.async_all("person"):
+        if state.attributes.get("user_id") == user_id:
+            return state.attributes.get("friendly_name") or state.entity_id
+    user = await hass.auth.async_get_user(user_id)
+    return user.name if user else None
 
 
 def _parse_due(value: str | None):

@@ -24,6 +24,8 @@ class FamilyTodoPanel extends HTMLElement {
     this._addingSection = false;
     this._initialized = false;
     this._haUsers = []; // HA-konton, för "Ägare"-väljaren - se _reloadLists/_mkUserPicker
+    this._openUpcoming = {}; // "entry_id::section_id (eller __none__/__flat__)" -> bool - Kommande-gruppen är hopfälld som förval
+    this._openLogs = {}; // uid -> bool (hela historiken visas, inte bara de senaste)
     this._weekOffset = 0; // Veckan-fliken: 0 = denna vecka, -1 = förra, 1 = nästa
     this._agenda = []; // rader från family_todo/agenda för vald vecka - se _reloadAgenda
     // entry_id -> { assignee: "__all__" | "__none__" | namn, sort: "manual" | "due" | "assignee" | "name" }
@@ -154,6 +156,17 @@ class FamilyTodoPanel extends HTMLElement {
         .ft-week-parent { color: var(--secondary-text-color); font-size: 12px; }
         .ft-overdue { color: var(--error-color, #db4437); }
         .ft-list-chip { cursor: pointer; text-decoration: underline dotted; }
+        .ft-upcoming-header { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px 0; cursor: pointer;
+          font-size: 12px; color: var(--secondary-text-color); user-select: none; }
+        .ft-upcoming-header ha-icon { --mdc-icon-size: 16px; }
+        .ft-upcoming { opacity: .75; }
+        .ft-log { margin-top: 4px; font-size: 12px; color: var(--secondary-text-color); }
+        .ft-log-row { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 3px 0;
+          border-bottom: 1px solid var(--divider-color, #e4e4e4); }
+        .ft-log-row:last-child { border-bottom: none; }
+        .ft-log-row .ft-log-when { color: var(--primary-text-color); min-width: 130px; }
+        .ft-log-late { color: var(--error-color, #db4437); }
+        .ft-log-ok { color: var(--success-color, #2e7d32); }
       </style>
       <h1><ha-icon icon="mdi:format-list-checks"></ha-icon>Att göra</h1>
       <p class="subtitle">Skapa listor här - varje lista blir en riktig todo-lista i Home Assistant
@@ -346,8 +359,39 @@ class FamilyTodoPanel extends HTMLElement {
     return groups;
   }
 
+  // Upcoming recurring items (see _isUpcoming) aren't counted - they're
+  // not something to act on yet, that's the point of tucking them away.
   _incompleteCount(items) {
-    return items.filter((i) => i.status !== "completed").length;
+    return items.filter((i) => i.status !== "completed" && !_isUpcoming(i)).length;
+  }
+
+  // Renders a group's items with recurring ones that aren't close to due
+  // yet (_isUpcoming) moved into a collapsible "Kommande" sub-group at the
+  // bottom - collapsed by default, so the section shows what needs doing
+  // now. `key` identifies the group for the open/closed state.
+  _appendItemsWithUpcoming(parent, list, items, key) {
+    const current = items.filter((i) => !_isUpcoming(i));
+    const upcoming = items.filter((i) => _isUpcoming(i));
+    for (const item of current) parent.appendChild(this._renderItem(list, item));
+    if (!upcoming.length) return;
+    const open = !!this._openUpcoming[key];
+    const header = document.createElement("div");
+    header.className = "ft-upcoming-header";
+    header.innerHTML =
+      `<ha-icon icon="${open ? "mdi:chevron-down" : "mdi:chevron-right"}"></ha-icon>` +
+      `<ha-icon icon="mdi:calendar-clock"></ha-icon><span>Kommande (${upcoming.length})</span>`;
+    header.title = "Återkommande uppgifter med mer än 20 % av tiden kvar till nästa förfallodatum";
+    header.addEventListener("click", () => {
+      this._openUpcoming[key] = !open;
+      this._render();
+    });
+    parent.appendChild(header);
+    if (!open) return;
+    for (const item of upcoming) {
+      const el = this._renderItem(list, item);
+      el.classList.add("ft-upcoming");
+      parent.appendChild(el);
+    }
   }
 
   // Fäll-ihop/visa-knapp med en badge (antal ej klara) som bara syns när
@@ -893,9 +937,7 @@ class FamilyTodoPanel extends HTMLElement {
       // Inga sektioner skapade - visa uppgifterna som en enkel platt lista,
       // precis som innan sektioner fanns, istället för att tvinga fram en
       // "Utan sektion"-rubrik ingen bett om.
-      for (const item of items) {
-        card.appendChild(this._renderItem(list, item));
-      }
+      this._appendItemsWithUpcoming(card, list, items, `${list.entry_id}::__flat__`);
     } else {
       for (const group of this._groupSectionsByFloor(sections)) {
         const groupSectionIds = new Set(group.sections.map((s) => s.id));
@@ -981,9 +1023,7 @@ class FamilyTodoPanel extends HTMLElement {
       empty.textContent = "Inga uppgifter här.";
       group.appendChild(empty);
     }
-    for (const item of items) {
-      group.appendChild(this._renderItem(list, item));
-    }
+    this._appendItemsWithUpcoming(group, list, items, sectionKey);
     return group;
   }
 
@@ -1377,7 +1417,7 @@ class FamilyTodoPanel extends HTMLElement {
 
     wrap.appendChild(row);
 
-    if (item.assignee || item.due || item.recurrence) {
+    if (item.assignee || item.due || item.recurrence || item.last_completed) {
       const meta = document.createElement("div");
       meta.className = "ft-item-meta";
       if (item.assignee) meta.innerHTML += `<span><ha-icon icon="mdi:account"></ha-icon> ${_esc(item.assignee)}</span>`;
@@ -1391,6 +1431,8 @@ class FamilyTodoPanel extends HTMLElement {
       }
       if (item.recurrence)
         meta.innerHTML += `<span><ha-icon icon="mdi:repeat"></ha-icon> ${_esc(_recurrenceLabel(item.recurrence))}</span>`;
+      if (item.last_completed)
+        meta.innerHTML += `<span><ha-icon icon="mdi:check"></ha-icon> Senast: ${_esc(item.last_completed)}</span>`;
       wrap.appendChild(meta);
     }
 
@@ -1667,6 +1709,52 @@ class FamilyTodoPanel extends HTMLElement {
     return row;
   }
 
+  // Historik över när en återkommande uppgift (eller ett av dess
+  // återkommande delsteg) utförts - nyast först, de 5 senaste som förval.
+  _renderCompletionLog(item) {
+    const box = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "ft-row";
+    title.innerHTML = `<span>Historik:</span>`;
+    box.appendChild(title);
+    const log = [...(item.completion_log || [])].reverse();
+    const wrap = document.createElement("div");
+    wrap.className = "ft-log";
+    if (!log.length) {
+      wrap.textContent = "Inte utförd än.";
+      box.appendChild(wrap);
+      return box;
+    }
+    const showAll = !!this._openLogs[item.uid];
+    for (const entry of showAll ? log : log.slice(0, 5)) {
+      const row = document.createElement("div");
+      row.className = "ft-log-row";
+      let html = `<span class="ft-log-when">${_esc(_formatDue(entry.at))}</span>`;
+      if (entry.subtask) html += `<span><ha-icon icon="mdi:subdirectory-arrow-right"></ha-icon> ${_esc(entry.subtask)}</span>`;
+      if (entry.by) html += `<span><ha-icon icon="mdi:account"></ha-icon> ${_esc(entry.by)}</span>`;
+      const late = _daysLate(entry);
+      if (late !== null) {
+        html += late > 0
+          ? `<span class="ft-log-late">${late} ${late === 1 ? "dag" : "dagar"} sent</span>`
+          : `<span class="ft-log-ok">i tid</span>`;
+      }
+      row.innerHTML = html;
+      wrap.appendChild(row);
+    }
+    box.appendChild(wrap);
+    if (log.length > 5) {
+      const more = document.createElement("button");
+      more.className = "text";
+      more.textContent = showAll ? "Visa färre" : `Visa alla (${log.length})`;
+      more.addEventListener("click", () => {
+        this._openLogs[item.uid] = !showAll;
+        this._render();
+      });
+      box.appendChild(more);
+    }
+    return box;
+  }
+
   _renderItemDetail(list, item) {
     const detail = document.createElement("div");
     detail.className = "ft-item-detail";
@@ -1802,6 +1890,10 @@ class FamilyTodoPanel extends HTMLElement {
       });
       addSubRow.appendChild(addSubBtn);
       detail.appendChild(addSubRow);
+
+      if (item.recurrence || (item.completion_log || []).length) {
+        detail.appendChild(this._renderCompletionLog(item));
+      }
     }
 
     // Kopiera till andra rum - bara meningsfullt om listan har fler än en
@@ -1880,6 +1972,37 @@ function _formatDayLabel(due) {
   const day = d.toLocaleDateString("sv-SE", { weekday: "short", day: "numeric", month: "short" });
   const label = day.charAt(0).toUpperCase() + day.slice(1);
   return hasTime ? `${label} ${d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}` : label;
+}
+
+// Moment ett förfallodatum "går ut" - ett datum utan tid gäller hela dagen.
+function _dueMoment(due) {
+  return new Date(_hasDueTime(due) ? due : `${due}T23:59:59`);
+}
+
+// Återkommande uppgift med mer än 20 % av sitt intervall kvar till nästa
+// förfallodatum - visas under "Kommande" i sin sektion istället för bland
+// det som är aktuellt. Intervallet räknas bakåt från förfallodatumet (så
+// "varje månad" blir rätt antal dagar för just den månaden).
+function _isUpcoming(item, now = new Date()) {
+  if (!item.recurrence || !item.due || item.status === "completed") return false;
+  const due = _dueMoment(item.due);
+  if (isNaN(due.getTime())) return false;
+  const prev = new Date(due);
+  const n = item.recurrence.interval || 1;
+  if (item.recurrence.unit === "months") prev.setMonth(prev.getMonth() - n);
+  else prev.setDate(prev.getDate() - n * (item.recurrence.unit === "weeks" ? 7 : 1));
+  const period = due - prev;
+  return period > 0 && due - now > 0.2 * period;
+}
+
+// Antal hela dagar efter förfallodatumet en loggad avbockning skedde
+// (0 = i tid), eller null om tillfället saknade förfallodatum.
+function _daysLate(entry) {
+  if (!entry.due || !entry.at) return null;
+  const due = new Date(`${entry.due.slice(0, 10)}T00:00`);
+  const at = new Date(`${entry.at.slice(0, 10)}T00:00`);
+  if (isNaN(due.getTime()) || isNaN(at.getTime())) return null;
+  return Math.max(0, Math.round((at - due) / 86400000));
 }
 
 function _defaultListIcon(list) {

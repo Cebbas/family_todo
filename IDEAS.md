@@ -153,8 +153,15 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
   Dra-och-släpp av uppgifter är bara aktivt i "Egen ordning"
 - [ ] Släppyta för "Utan sektion" även när den gruppen är tom (idag syns
   den bara när den har uppgifter - flytta dit via rullgardinen annars)
-- [x] ~~"Senast: <datum>" på återkommande uppgifter~~ - borttaget ur
-  raden (brus); `last_completed` sparas fortfarande
+- [x] "Kommande"-grupp per sektion: återkommande uppgifter med mer än
+  20 % av intervallet kvar till nästa förfallodatum hamnar i en hopfälld
+  "Kommande (n)"-grupp längst ner i sin sektion (`_isUpcoming` i panelen)
+  och räknas inte i "ej klara"-badgen - så sektionen visar det som är
+  aktuellt nu
+- [x] Logg över utförda tillfällen för återkommande uppgifter och
+  delsteg (`completion_log` på uppgiften, max 100): tidpunkt, vem (via
+  HA-kontot -> person.*-namn) och vilket förfallodatum som gällde. Visas
+  som "Historik" i uppgiftens redigeringsvy med "i tid"/"N dagar sent"
 
 ## Trevligt-att-ha (ej påbörjat)
 - [ ] Koppling mot family-planner-card: visa dagens/veckans obockade

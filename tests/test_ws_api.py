@@ -666,3 +666,83 @@ async def test_child_blocked_from_completing_in_another_persons_list(hass):
         hass, connection, {"id": 2, "entry_id": "naomis_list", "uid": entity.todo_items[0].uid}
     )
     assert connection.error[0] == "unauthorized"
+
+
+# ---- completion log for recurring items/subtasks ----
+
+
+class _CtxConnection(_FakeConnection):
+    def context(self, msg):
+        from homeassistant.core import Context
+
+        return Context(user_id=self.user.id if self.user else None)
+
+
+async def test_completing_recurring_item_logs_who_and_which_due(hass):
+    hass.states.async_set("person.naomi", "home", {"friendly_name": "Naomi", "user_id": "naomi-uid"})
+    entity = await _make_list(hass, "l1")
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(),
+        {"id": 1, "entry_id": "l1", "summary": "Byt lakan", "due": "2026-10-12",
+         "recurrence": {"interval": 1, "unit": "weeks"}},
+    )
+    uid = entity.todo_items[0].uid
+    await ws_api.ws_complete_item.__wrapped__(
+        hass, _CtxConnection(user_id="naomi-uid"), {"id": 2, "entry_id": "l1", "uid": uid}
+    )
+    (entry,) = entity._model().get(uid).completion_log
+    assert entry.due == "2026-10-12"
+    assert entry.by == "Naomi"
+    assert entry.subtask is None
+
+    connection = _FakeConnection()
+    await ws_api.ws_list_items.__wrapped__(hass, connection, {"id": 3, "entry_id": "l1"})
+    assert connection.result["items"][0]["completion_log"][0]["by"] == "Naomi"
+
+
+async def test_completing_plain_item_does_not_log(hass):
+    entity = await _make_list(hass, "l1")
+    await ws_api.ws_create_item.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "l1", "summary": "X"})
+    uid = entity.todo_items[0].uid
+    await ws_api.ws_complete_item.__wrapped__(hass, _CtxConnection(), {"id": 2, "entry_id": "l1", "uid": uid})
+    assert entity._model().get(uid).completion_log == []
+
+
+async def test_recurring_subtask_check_off_is_logged_but_plain_subtask_is_not(hass):
+    from custom_components.family_todo.store import Recurrence, Subtask
+
+    entity = await _make_list(hass, "l1")
+    await ws_api.ws_create_item.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "l1", "summary": "Växter"})
+    uid = entity.todo_items[0].uid
+    entity._model().update(
+        uid,
+        subtasks=[
+            Subtask(id="s1", summary="Vattna", due="2026-10-12", recurrence=Recurrence(3, "days")),
+            Subtask(id="s2", summary="Gödsla"),
+        ],
+    )
+    await ws_api.ws_set_item_extra.__wrapped__(
+        hass, _CtxConnection(),
+        {"id": 2, "entry_id": "l1", "uid": uid, "subtasks": [
+            {"id": "s1", "summary": "Vattna", "complete": True, "due": "2026-10-12",
+             "recurrence": {"interval": 3, "unit": "days"}},
+            {"id": "s2", "summary": "Gödsla", "complete": True},
+        ]},
+    )
+    (entry,) = entity._model().get(uid).completion_log
+    assert (entry.subtask, entry.due) == ("Vattna", "2026-10-12")
+
+
+async def test_copied_item_starts_with_empty_log(hass):
+    from custom_components.family_todo.store import CompletionLogEntry
+
+    entity = await _make_list(hass, "l1")
+    (kok,) = _add_sections(entity, "Kök")
+    await ws_api.ws_create_item.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "l1", "summary": "X"})
+    source = entity._model().items[0]
+    source.log_completion(CompletionLogEntry(at="2026-10-01T10:00"))
+    connection = _FakeConnection()
+    await ws_api.ws_copy_item.__wrapped__(
+        hass, connection, {"id": 2, "entry_id": "l1", "uid": source.uid, "section_ids": [kok.id]}
+    )
+    assert entity._model().get(connection.result["uids"][0]).completion_log == []
