@@ -55,11 +55,18 @@
   gruppering utan att kräva en egen kategori-funktion) och kopiera-till-
   rum blir kvar. Lägg-till-raden var redan minimal (titel + valfri
   sektion + Enter-för-att-lägga-till) och behövde ingen ändring.
-- [ ] Kvantitet/mängd per vara som eget fält (avvaktande - fritext i
-  titeln, t.ex. "Mjölk x2", funkar redan) - inte byggt än, ingen bad om
-  det specifikt när detta byggdes.
-- [ ] Förvalda kategorier (mejeri, frukt/grönt, ...) istället för att
-  återanvända den generiska sektions-funktionen manuellt - inte byggt än.
+- [x] Kvantitet/mängd per vara som eget fält (`quantity`, fritext - "2",
+  "500 g"). Eget Antal-fält i lägg-till-raden och i varans redigeringsvy,
+  visas som en liten pill före titeln och speglas in i description-blocket
+  ("🔢 2 l") så HA:s todo-kort också ser den.
+- [x] Förvalda butikskategorier (`categories.py`): knappen "Lägg till
+  butikskategorier" skapar vanliga sektioner (Frukt & grönt, Bröd, Mejeri,
+  Kött & fisk, Frys, Skafferi, Dryck, Hushåll, Hygien) märkta med
+  `category`. Nya varor sorteras in automatiskt via nyckelord (även
+  sammansättningar som "lättmjölk") - även när de läggs till via
+  röstassistenten/HA:s todo-kort. En egen sektion som heter exakt som en
+  kategori ("Mejeri") räknas också. Lägg-till-radens "Automatiskt" är
+  förval; "Ingen sektion" eller en vald sektion vinner över gissningen.
 
 ## Sysslor/chores med tilldelning och rotation (delvis påbörjat)
 Ursprungligen ett alternativt scope för hela integrationen – landade
@@ -73,9 +80,12 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
 - [ ] Poäng/streak-räkning per person (hur många sysslor gjorda denna
   vecka, i rad, osv.) – "gamification" för att göra sysslor mer
   motiverande för barn
-- [ ] Ett eget vy-läge i panelen (eller ett separat kort) som visar
-  "veckans sysslor" grupperat per person, istället för dagens
-  lista-per-lista-vy
+- [x] "Veckan"-fliken i panelen: veckans sysslor från alla att-göra-
+  listor grupperat per person (ws `agenda`, `agenda.py`), med försenade
+  uppgifter för innevarande vecka, delsteg med eget förfallodatum som egna
+  rader, bläddring mellan veckor, avbockning direkt (`complete_item`/
+  `complete_subtask` - återkommande rullar vidare som vanligt) och klick på
+  listnamnet för att hoppa till uppgiften.
 - [x] ~~Notis/påminnelse när en syssla inte är avbockad vid en viss tid~~ -
   löst bredare, för alla uppgifter, se "Påminnelser" ovan under
   Grundfunktioner
@@ -95,19 +105,20 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
   extra titel-prefix bedömdes onödigt.
 
 ## Robusthet
-- [x] ~~Repair-issue om en listas lagringsfil är korrupt~~ - redan löst av
-  HA-kärnan sedan en tidigare version, ingen egen kod behövs: `Store`
-  (homeassistant/helpers/storage.py) fångar redan JSONDecodeError,
-  byter namn på den oläsbara filen till `<nyckel>.corrupt.<tidsstämpel>`
-  bredvid originalet, faller tillbaka på tom data, och skapar själv en
-  `storage_corruption`-Repairs-issue (severity critical, is_fixable) som
-  namnger både originalfilen och säkerhetskopian. Testat live (2026-09-19,
-  slumpad testlista, filen skrevs över med ogiltig JSON och listans
-  config-entry laddades om) - allt ovanstående hände automatiskt utan att
-  family_todo behövde göra något. Byggde och deployade en egen version av
-  precis det här (försök `de3948f`, reverterad i `2b289d4`) innan
-  upptäckten - onödig kod som aldrig skulle nåtts, eftersom
-  `FamilyTodoStore.async_load` aldrig får se undantaget.
+- [x] Repair-issue när en listas lagringsfil inte går att läsa in helt -
+  två olika fall:
+  - **Ogiltig JSON**: redan löst av HA-kärnan, ingen egen kod behövs:
+    `Store` (homeassistant/helpers/storage.py) fångar JSONDecodeError,
+    byter namn på filen till `<nyckel>.corrupt.<tidsstämpel>`, faller
+    tillbaka på tom data och skapar själv en `storage_corruption`-issue.
+    Testat live 2026-09-19 (försök `de3948f` med egen kod för just detta,
+    reverterad i `2b289d4` - den kunde aldrig nås).
+  - **Giltig JSON men trasig struktur** (t.ex. en uppgift utan `uid` efter
+    en manuell redigering) - det fallet fångar HA inte, och tidigare
+    kraschade `TodoListData.from_dict` då hela listans uppstart.
+    `from_dict` hoppar nu över enskilda trasiga uppgifter/sektioner;
+    originalet sparas i `.storage/family_todo_list_<id>.backup_<tid>` och
+    en egen `corrupt_list`-issue skapas (se `FamilyTodoStore.async_load`).
 - [x] Diagnostics-stöd (`diagnostics.py`) för att exportera
   felsökningsdata via HA:s inbyggda diagnostics-gränssnitt - en config-
   entry (lista) i taget: hela dess sparade data (uppgifter/sektioner/
@@ -127,15 +138,23 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
 - [x] Återkommande-växel i uppgiftens delstegs-/tilldelningsvy (på/av +
   intervall + enhet), med en "🔁"-badge och nästa förfallodatum synligt
   direkt i uppgiftsraden utan att behöva öppna den.
-- [ ] Drag-och-släpp för att ändra ordning på uppgifter (idag bara stöd
-  i backend/entiteten via `async_move_todo_item`, inget UI för det i
-  panelen än – ordningen syns som den lagras, men går bara att ändra via
-  HA:s eget todo-kort om det stödjer drag-och-släpp)
-- [ ] Drag-och-släpp för att flytta en uppgift till en annan sektion
-  (idag bara via rullgardinen i uppgiftens delstegs-/tilldelningsvy)
-- [ ] Drag-och-släpp för att ändra ordning på sektionerna själva (idag
-  visas de i den ordning de skapades)
-- [ ] Filtrera/sortera uppgifter per tilldelad person i panelen
+- [x] Drag-och-släpp för att ändra ordning på uppgifter - handtag
+  (`mdi:drag`) per rad, pekar-baserat (pointer events) så det funkar med
+  touch i HA-appen, inte bara mus
+- [x] Drag-och-släpp för att flytta en uppgift till en annan sektion -
+  släpp på en uppgift i målsektionen, eller på sektionen som helhet (t.ex.
+  en tom sektion) för att lägga den sist där. `move_item` tar ett valfritt
+  `section_id` så position och sektion ändras i ett anrop
+- [x] Drag-och-släpp för att ändra ordning på sektionerna själva
+  (handtag i sektionsrubriken, ws `move_section`)
+- [x] Filtrera/sortera uppgifter per tilldelad person i panelen - "Visa:"
+  (alla / en person / ej tilldelade) och "Sortera:" (egen ordning /
+  förfallodatum / tilldelad / namn) per lista, sparas per webbläsare.
+  Dra-och-släpp av uppgifter är bara aktivt i "Egen ordning"
+- [ ] Släppyta för "Utan sektion" även när den gruppen är tom (idag syns
+  den bara när den har uppgifter - flytta dit via rullgardinen annars)
+- [x] ~~"Senast: <datum>" på återkommande uppgifter~~ - borttaget ur
+  raden (brus); `last_completed` sparas fortfarande
 
 ## Trevligt-att-ha (ej påbörjat)
 - [ ] Koppling mot family-planner-card: visa dagens/veckans obockade

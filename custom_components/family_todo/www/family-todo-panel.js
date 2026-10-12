@@ -24,6 +24,11 @@ class FamilyTodoPanel extends HTMLElement {
     this._addingSection = false;
     this._initialized = false;
     this._haUsers = []; // HA-konton, för "Ägare"-väljaren - se _reloadLists/_mkUserPicker
+    this._weekOffset = 0; // Veckan-fliken: 0 = denna vecka, -1 = förra, 1 = nästa
+    this._agenda = []; // rader från family_todo/agenda för vald vecka - se _reloadAgenda
+    // entry_id -> { assignee: "__all__" | "__none__" | namn, sort: "manual" | "due" | "assignee" | "name" }
+    // Sparas per webbläsare (localStorage) - en ren vy-inställning, inte listdata.
+    this._viewPrefs = _loadViewPrefs();
   }
 
   set hass(hass) {
@@ -121,6 +126,34 @@ class FamilyTodoPanel extends HTMLElement {
         .ft-collapse-toggle button.text { padding: 2px 4px; }
         .ft-section-add { border: 1px dashed var(--divider-color, #ccc); border-radius: 8px; padding: 10px;
           margin-top: 12px; }
+        .ft-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+          font-size: 13px; color: var(--secondary-text-color); }
+        .ft-toolbar select { min-width: 0; padding: 4px 8px; font-size: 13px; }
+        .ft-drag-handle { display: flex; align-items: center; flex-shrink: 0; cursor: grab; touch-action: none;
+          color: var(--secondary-text-color); opacity: .6; padding: 2px; user-select: none; }
+        .ft-drag-handle:hover { opacity: 1; }
+        .ft-drag-handle ha-icon { --mdc-icon-size: 18px; }
+        .ft-has-handle > .ft-item-meta, .ft-has-handle > .ft-item-detail { margin-left: 58px; }
+        .ft-has-handle > .ft-subtask-quicklist { padding-left: 60px; }
+        .ft-dragging { opacity: .4; }
+        .ft-drop-before { box-shadow: inset 0 3px 0 var(--primary-color); }
+        .ft-drop-after { box-shadow: inset 0 -3px 0 var(--primary-color); }
+        .ft-drop-into { outline: 2px dashed var(--primary-color); outline-offset: 2px; border-radius: 6px; }
+        .ft-qty { font-size: 12px; font-weight: 500; padding: 1px 8px; border-radius: 999px; white-space: nowrap;
+          background: var(--primary-color); color: var(--text-primary-color, white); flex-shrink: 0; }
+        .ft-week-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+        .ft-week-nav .ft-week-title { flex: 1; text-align: center; font-weight: 500; }
+        .ft-week-person { margin-top: 16px; }
+        .ft-week-person:first-of-type { margin-top: 4px; }
+        .ft-week-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0;
+          border-bottom: 1px solid var(--divider-color, #eee); }
+        .ft-week-row:last-child { border-bottom: none; }
+        .ft-week-row input[type="checkbox"] { width: 20px; height: 20px; flex-shrink: 0; cursor: pointer; margin-top: 1px; }
+        .ft-week-row .ft-week-text { flex: 1; font-size: 14px; }
+        .ft-week-row .ft-item-meta { margin-left: 0; }
+        .ft-week-parent { color: var(--secondary-text-color); font-size: 12px; }
+        .ft-overdue { color: var(--error-color, #db4437); }
+        .ft-list-chip { cursor: pointer; text-decoration: underline dotted; }
       </style>
       <h1><ha-icon icon="mdi:format-list-checks"></ha-icon>Att göra</h1>
       <p class="subtitle">Skapa listor här - varje lista blir en riktig todo-lista i Home Assistant
@@ -152,11 +185,13 @@ class FamilyTodoPanel extends HTMLElement {
     } catch (err) {
       this._haUsers = [];
     }
-    const isFixedTab = this._activeListId === "__new__" || this._activeListId === "__notify__";
+    const isFixedTab = _FIXED_TABS.includes(this._activeListId);
     if (!this._activeListId || (!isFixedTab && !lists.find((l) => l.entry_id === this._activeListId))) {
       this._activeListId = lists.length ? lists[0].entry_id : "__new__";
     }
-    if (this._activeListId !== "__new__") {
+    if (this._activeListId === "__week__") {
+      await this._reloadAgenda();
+    } else if (!_FIXED_TABS.includes(this._activeListId)) {
       await this._reloadItems(this._activeListId);
     }
     this._render();
@@ -169,6 +204,99 @@ class FamilyTodoPanel extends HTMLElement {
     ]);
     this._notifyServices = services;
     this._notifyMap = map;
+  }
+
+  // Veckan-fliken: alla oavklarade uppgifter/delsteg från alla att-göra-
+  // listor som förfaller den valda veckan (+ försenade, för innevarande
+  // vecka) - se agenda.py/ws_agenda.
+  async _reloadAgenda() {
+    const monday = _mondayOf(new Date());
+    monday.setDate(monday.getDate() + this._weekOffset * 7);
+    const sunday = new Date(monday);
+    sunday.setDate(sunday.getDate() + 6);
+    const { items } = await this._hass.callWS({
+      type: "family_todo/agenda",
+      start: _isoDate(monday),
+      end: _isoDate(sunday),
+      include_overdue: this._weekOffset === 0,
+      today: _isoDate(new Date()),
+    });
+    this._agenda = items;
+    this._agendaMonday = monday;
+  }
+
+  _prefsFor(entryId) {
+    return { assignee: "__all__", sort: "manual", ...(this._viewPrefs[entryId] || {}) };
+  }
+
+  _setPrefs(entryId, changes) {
+    this._viewPrefs[entryId] = { ...this._prefsFor(entryId), ...changes };
+    _saveViewPrefs(this._viewPrefs);
+    this._render();
+  }
+
+  // Filter (per tilldelad person) + sortering enligt listans vy-inställning.
+  // Inköpslistor har ingen tilldelning, så där gäller bara sorteringen.
+  _visibleItems(list, items) {
+    const prefs = this._prefsFor(list.entry_id);
+    let out = items.map((item, index) => ({ item, index }));
+    if (list.list_type !== "shopping" && prefs.assignee !== "__all__") {
+      out = out.filter(({ item }) =>
+        prefs.assignee === "__none__" ? !item.assignee : item.assignee === prefs.assignee
+      );
+    }
+    const byDue = (a, b) => {
+      if (!a.item.due && !b.item.due) return 0;
+      if (!a.item.due) return 1;
+      if (!b.item.due) return -1;
+      return a.item.due < b.item.due ? -1 : a.item.due > b.item.due ? 1 : 0;
+    };
+    const cmp = {
+      due: byDue,
+      assignee: (a, b) => {
+        if (!a.item.assignee !== !b.item.assignee) return a.item.assignee ? -1 : 1;
+        return (a.item.assignee || "").localeCompare(b.item.assignee || "", "sv") || byDue(a, b);
+      },
+      name: (a, b) => a.item.summary.localeCompare(b.item.summary, "sv"),
+    }[prefs.sort];
+    if (cmp) out.sort((a, b) => cmp(a, b) || a.index - b.index);
+    return out.map(({ item }) => item);
+  }
+
+  _renderToolbar(list, items) {
+    const prefs = this._prefsFor(list.entry_id);
+    const bar = document.createElement("div");
+    bar.className = "ft-toolbar";
+
+    if (list.list_type !== "shopping") {
+      const names = [...new Set([...this._persons.map((p) => p.name), ...items.map((i) => i.assignee).filter(Boolean)])];
+      const filter = document.createElement("select");
+      filter.innerHTML =
+        `<option value="__all__">Alla</option>` +
+        names.map((n) => `<option value="${_esc(n)}">${_esc(n)}</option>`).join("") +
+        `<option value="__none__">Ej tilldelade</option>`;
+      filter.value = names.includes(prefs.assignee) || prefs.assignee === "__none__" ? prefs.assignee : "__all__";
+      filter.addEventListener("change", () => this._setPrefs(list.entry_id, { assignee: filter.value }));
+      bar.append("Visa:");
+      bar.appendChild(filter);
+    }
+
+    const sort = document.createElement("select");
+    const sortOptions =
+      list.list_type === "shopping"
+        ? [["manual", "Egen ordning"], ["name", "Namn"]]
+        : [["manual", "Egen ordning"], ["due", "Förfallodatum"], ["assignee", "Tilldelad"], ["name", "Namn"]];
+    sort.innerHTML = sortOptions.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+    sort.value = sortOptions.some(([v]) => v === prefs.sort) ? prefs.sort : "manual";
+    sort.addEventListener("change", () => this._setPrefs(list.entry_id, { sort: sort.value }));
+    bar.append("Sortera:");
+    bar.appendChild(sort);
+    if (sort.value !== "manual") {
+      const hint = document.createElement("span");
+      hint.textContent = "(dra-och-släpp av uppgifter bara i egen ordning)";
+      bar.appendChild(hint);
+    }
+    return bar;
   }
 
   async _reloadItems(entryId) {
@@ -269,6 +397,17 @@ class FamilyTodoPanel extends HTMLElement {
       });
       tabs.appendChild(btn);
     }
+    const weekBtn = document.createElement("button");
+    weekBtn.className = "ft-tab" + (this._activeListId === "__week__" ? " active" : "");
+    weekBtn.innerHTML = `<ha-icon icon="mdi:calendar-week"></ha-icon>Veckan`;
+    weekBtn.addEventListener("click", async () => {
+      this._activeListId = "__week__";
+      this._addingSection = false;
+      await this._reloadAgenda();
+      this._render();
+    });
+    tabs.appendChild(weekBtn);
+
     const notifyBtn = document.createElement("button");
     notifyBtn.className = "ft-tab" + (this._activeListId === "__notify__" ? " active" : "");
     notifyBtn.innerHTML = `<ha-icon icon="mdi:bell-outline"></ha-icon>Notiser`;
@@ -302,9 +441,150 @@ class FamilyTodoPanel extends HTMLElement {
       content.appendChild(this._renderNotifyCard());
       return;
     }
+    if (this._activeListId === "__week__") {
+      content.appendChild(this._renderWeekCard());
+      return;
+    }
     const list = this._lists.find((l) => l.entry_id === this._activeListId);
     if (!list) return;
     content.appendChild(this._renderListCard(list));
+  }
+
+  // "Veckans sysslor" grupperat per person - uppgifter och delsteg med
+  // förfallodatum den valda veckan, från alla att-göra-listor. Bocka av
+  // direkt här (complete_item/complete_subtask - återkommande rullar vidare
+  // som vanligt); klick på listnamnet hoppar till uppgiften i sin lista.
+  _renderWeekCard() {
+    const card = document.createElement("div");
+    card.className = "ft-card";
+    const monday = this._agendaMonday || _mondayOf(new Date());
+    const sunday = new Date(monday);
+    sunday.setDate(sunday.getDate() + 6);
+    const fmt = (d) => d.toLocaleDateString("sv-SE", { day: "numeric", month: "short" });
+
+    const nav = document.createElement("div");
+    nav.className = "ft-week-nav";
+    const mkNav = (icon, title, delta) => {
+      const btn = document.createElement("button");
+      btn.className = "text";
+      btn.title = title;
+      btn.innerHTML = `<ha-icon icon="${icon}"></ha-icon>`;
+      btn.addEventListener("click", async () => {
+        this._weekOffset = delta === 0 ? 0 : this._weekOffset + delta;
+        await this._reloadAgenda();
+        this._render();
+      });
+      return btn;
+    };
+    nav.appendChild(mkNav("mdi:chevron-left", "Förra veckan", -1));
+    const title = document.createElement("span");
+    title.className = "ft-week-title";
+    title.textContent = `Vecka ${_isoWeek(monday)} · ${fmt(monday)}–${fmt(sunday)}`;
+    nav.appendChild(title);
+    if (this._weekOffset !== 0) {
+      const todayBtn = mkNav("mdi:calendar-today", "Denna vecka", 0);
+      todayBtn.innerHTML += " Denna vecka";
+      nav.appendChild(todayBtn);
+    }
+    nav.appendChild(mkNav("mdi:chevron-right", "Nästa vecka", 1));
+    card.appendChild(nav);
+
+    if (!this._agenda.length) {
+      const empty = document.createElement("div");
+      empty.className = "ft-empty";
+      empty.textContent =
+        this._weekOffset === 0
+          ? "Inget med förfallodatum den här veckan 🎉"
+          : "Inget med förfallodatum den veckan.";
+      card.appendChild(empty);
+      return card;
+    }
+
+    // Personer i samma ordning som tilldelnings-väljaren, sedan övriga
+    // fritext-namn, sist "Ej tilldelade".
+    const groups = new Map();
+    for (const p of this._persons) groups.set(p.name, []);
+    for (const row of this._agenda) {
+      const key = row.assignee || "";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    if (groups.has("")) {
+      const unassigned = groups.get("");
+      groups.delete("");
+      groups.set("", unassigned);
+    }
+
+    for (const [name, rows] of groups) {
+      if (!rows.length) continue;
+      const group = document.createElement("div");
+      group.className = "ft-week-person";
+      const header = document.createElement("div");
+      header.className = "ft-section-header";
+      const overdue = rows.filter((r) => r.overdue).length;
+      header.innerHTML =
+        `<ha-icon icon="${name ? "mdi:account" : "mdi:account-question-outline"}"></ha-icon>` +
+        `<span class="ft-section-name">${_esc(name || "Ej tilldelade")}</span>` +
+        (overdue ? `<span class="ft-progress ft-overdue">${overdue} ${overdue === 1 ? "försenad" : "försenade"}</span>` : "") +
+        `<span class="ft-progress">${rows.length}</span>`;
+      group.appendChild(header);
+      for (const row of rows) group.appendChild(this._renderWeekRow(row));
+      card.appendChild(group);
+    }
+    return card;
+  }
+
+  _renderWeekRow(row) {
+    const el = document.createElement("div");
+    el.className = "ft-week-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.addEventListener("change", async () => {
+      cb.disabled = true;
+      try {
+        await this._hass.callWS(
+          row.kind === "subtask"
+            ? { type: "family_todo/complete_subtask", entry_id: row.entry_id, uid: row.uid, subtask_id: row.subtask_id }
+            : { type: "family_todo/complete_item", entry_id: row.entry_id, uid: row.uid }
+        );
+      } catch (err) {
+        alert((err && err.message) || "Kunde inte bocka av uppgiften.");
+      }
+      await this._reloadAgenda();
+      this._render();
+    });
+    el.appendChild(cb);
+
+    const text = document.createElement("div");
+    text.className = "ft-week-text";
+    text.textContent = row.summary;
+    if (row.parent_summary) {
+      const parent = document.createElement("div");
+      parent.className = "ft-week-parent";
+      parent.textContent = `Delsteg i ${row.parent_summary}`;
+      text.appendChild(parent);
+    }
+    const meta = document.createElement("div");
+    meta.className = "ft-item-meta";
+    meta.innerHTML =
+      `<span class="${row.overdue ? "ft-overdue" : ""}"><ha-icon icon="mdi:calendar"></ha-icon> ` +
+      `${row.overdue ? "Försenad · " : ""}${_esc(_formatDayLabel(row.due))}</span>` +
+      (row.recurrence ? `<span><ha-icon icon="mdi:repeat"></ha-icon> ${_esc(_recurrenceLabel(row.recurrence))}</span>` : "");
+    const chip = document.createElement("span");
+    chip.className = "ft-list-chip";
+    chip.title = "Öppna i listan";
+    chip.innerHTML = `<ha-icon icon="${_esc(row.list_icon || "mdi:format-list-checks")}"></ha-icon> ${_esc(row.list_name || "")}` +
+      (row.section_name ? ` · ${_esc(row.section_name)}` : "");
+    chip.addEventListener("click", async () => {
+      this._activeListId = row.entry_id;
+      this._openItems[row.uid] = true;
+      await this._reloadItems(row.entry_id);
+      this._render();
+    });
+    meta.appendChild(chip);
+    text.appendChild(meta);
+    el.appendChild(text);
+    return el;
   }
 
   _renderNotifyCard() {
@@ -460,7 +740,7 @@ class FamilyTodoPanel extends HTMLElement {
   }
 
   _renderListCard(list) {
-    const items = this._items[list.entry_id] || [];
+    let items = this._items[list.entry_id] || [];
     const card = document.createElement("div");
     card.className = "ft-card";
 
@@ -555,12 +835,18 @@ class FamilyTodoPanel extends HTMLElement {
 
     const sections = this._sections[list.entry_id] || [];
 
+    const isShopping = list.list_type === "shopping";
     const addRow = document.createElement("div");
     addRow.className = "ft-row";
+    // Inköpslista: "Automatiskt" (förval) låter backend sortera in varan i
+    // rätt butikskategori via nyckelord - se categories.py. Valet skickas då
+    // inte med alls; "Ingen sektion" skickas som ett uttryckligt null.
     const sectionOptions =
+      (isShopping ? `<option value="__auto__">Automatiskt</option>` : "") +
       `<option value="">Ingen sektion</option>` +
       sections.map((s) => `<option value="${_esc(s.id)}">${_esc(s.name)}</option>`).join("");
-    addRow.innerHTML = `<input type="text" id="add-summary" placeholder="Ny uppgift..." />
+    addRow.innerHTML = `<input type="text" id="add-summary" placeholder="${isShopping ? "Ny vara..." : "Ny uppgift..."}" />
+      ${isShopping ? `<input type="text" id="add-qty" placeholder="Antal" style="flex:0 0 80px;min-width:80px;" />` : ""}
       ${sections.length ? `<select id="add-section">${sectionOptions}</select>` : ""}
       <button id="add-btn">Lägg till</button>`;
     const doAdd = async () => {
@@ -568,15 +854,23 @@ class FamilyTodoPanel extends HTMLElement {
       const summary = input.value.trim();
       if (!summary) return;
       const sectionSelect = addRow.querySelector("#add-section");
+      const qtyInput = addRow.querySelector("#add-qty");
       input.value = "";
-      await this._hass.callWS({
-        type: "family_todo/create_item",
-        entry_id: list.entry_id,
-        summary,
-        section_id: sectionSelect ? sectionSelect.value || null : null,
-      });
+      const msg = { type: "family_todo/create_item", entry_id: list.entry_id, summary };
+      if (!sectionSelect) {
+        if (!isShopping) msg.section_id = null;
+      } else if (sectionSelect.value !== "__auto__") {
+        msg.section_id = sectionSelect.value || null;
+      }
+      if (qtyInput && qtyInput.value.trim()) {
+        msg.quantity = qtyInput.value.trim();
+        qtyInput.value = "";
+      }
+      await this._hass.callWS(msg);
       await this._reloadItems(list.entry_id);
       this._render();
+      const again = this.shadowRoot.getElementById("add-summary");
+      if (again) again.focus();
     };
     addRow.querySelector("#add-btn").addEventListener("click", doAdd);
     addRow.querySelector("#add-summary").addEventListener("keydown", (e) => {
@@ -584,7 +878,11 @@ class FamilyTodoPanel extends HTMLElement {
     });
     card.appendChild(addRow);
 
-    if (!items.length && !sections.length) {
+    if (items.length) card.appendChild(this._renderToolbar(list, items));
+    const allItems = items;
+    items = this._visibleItems(list, items);
+
+    if (!allItems.length && !sections.length) {
       const empty = document.createElement("div");
       empty.className = "ft-empty";
       empty.textContent = "Inga uppgifter än.";
@@ -635,12 +933,17 @@ class FamilyTodoPanel extends HTMLElement {
   _renderSectionGroup(list, section, items) {
     const group = document.createElement("div");
     group.className = "ft-section";
+    // Släppyta för dra-och-släpp - "" = "Utan sektion", se _dropTargetAt.
+    group.dataset.sectionId = section ? section.id : "";
 
     const header = document.createElement("div");
     header.className = "ft-section-header";
     if (section) {
       header.innerHTML = `<ha-icon icon="${section.icon || this._areaIcon(section.area_id)}"></ha-icon>
         <span class="ft-section-name">${_esc(section.name)}</span>`;
+      header.prepend(this._mkDragHandle("Dra för att flytta sektionen", (ev) =>
+        this._startDrag(ev, "section", { list, sectionId: section.id })
+      ));
       const editBtn = document.createElement("button");
       editBtn.className = "text";
       editBtn.innerHTML = `<ha-icon icon="mdi:pencil-outline"></ha-icon>`;
@@ -687,15 +990,34 @@ class FamilyTodoPanel extends HTMLElement {
   _renderSectionAdd(list) {
     const wrap = document.createElement("div");
     if (!this._addingSection) {
+      wrap.className = "ft-row";
+      wrap.style.marginTop = "12px";
       const btn = document.createElement("button");
       btn.className = "secondary";
       btn.innerHTML = `<ha-icon icon="mdi:plus"></ha-icon> Ny sektion`;
-      btn.style.marginTop = "12px";
       btn.addEventListener("click", () => {
         this._addingSection = true;
         this._render();
       });
       wrap.appendChild(btn);
+      if (list.list_type === "shopping") {
+        // Förvalda butikskategorier (Frukt & grönt, Mejeri, ...) som vanliga
+        // sektioner - befintliga hoppas över, se ws_add_preset_categories.
+        const presetBtn = document.createElement("button");
+        presetBtn.className = "secondary";
+        presetBtn.innerHTML = `<ha-icon icon="mdi:store-outline"></ha-icon> Lägg till butikskategorier`;
+        presetBtn.title = "Skapar sektioner som Frukt & grönt, Mejeri, Kött & fisk... Nya varor sorteras sedan in automatiskt.";
+        presetBtn.addEventListener("click", async () => {
+          const { sections } = await this._hass.callWS({
+            type: "family_todo/add_preset_categories",
+            entry_id: list.entry_id,
+          });
+          if (!sections.length) alert("Alla butikskategorier finns redan i listan.");
+          await this._reloadItems(list.entry_id);
+          this._render();
+        });
+        wrap.appendChild(presetBtn);
+      }
       return wrap;
     }
 
@@ -764,6 +1086,147 @@ class FamilyTodoPanel extends HTMLElement {
       });
   }
 
+  // ---- dra-och-släpp ----
+  // Egen pekar-baserad implementation (pointer events + setPointerCapture)
+  // istället för HTML5 drag-and-drop, som inte fungerar med touch - och
+  // panelen används mycket i HA-appen på mobilen. Bara handtaget startar en
+  // dragning (touch-action: none där), så resten av raden scrollar som vanligt.
+
+  _mkDragHandle(title, onPointerDown) {
+    const handle = document.createElement("span");
+    handle.className = "ft-drag-handle";
+    handle.title = title;
+    handle.innerHTML = `<ha-icon icon="mdi:drag"></ha-icon>`;
+    handle.addEventListener("pointerdown", onPointerDown);
+    return handle;
+  }
+
+  _startDrag(ev, kind, data) {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    ev.preventDefault();
+    const handle = ev.currentTarget;
+    const sourceEl = handle.closest(kind === "item" ? ".ft-item" : ".ft-section");
+    if (!sourceEl) return;
+    try {
+      handle.setPointerCapture(ev.pointerId);
+    } catch (err) {
+      // Äldre webbläsare - fungerar ändå så länge pekaren stannar över handtaget.
+    }
+    sourceEl.classList.add("ft-dragging");
+    const scroller = this._scrollParent();
+    let target = null;
+    const clearMarks = () => {
+      this.shadowRoot
+        .querySelectorAll(".ft-drop-before, .ft-drop-after, .ft-drop-into")
+        .forEach((el) => el.classList.remove("ft-drop-before", "ft-drop-after", "ft-drop-into"));
+    };
+    const onMove = (e) => {
+      e.preventDefault();
+      clearMarks();
+      target = this._dropTargetAt(kind, e.clientX, e.clientY, sourceEl);
+      if (target) target.el.classList.add(`ft-drop-${target.pos}`);
+      const edge = 60;
+      if (e.clientY < edge) scroller.scrollBy(0, -14);
+      else if (e.clientY > window.innerHeight - edge) scroller.scrollBy(0, 14);
+    };
+    const onEnd = async (e) => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onEnd);
+      handle.removeEventListener("pointercancel", onEnd);
+      clearMarks();
+      sourceEl.classList.remove("ft-dragging");
+      if (e.type !== "pointerup" || !target) return;
+      try {
+        if (kind === "item") await this._dropItem(data, target);
+        else await this._dropSection(data, target);
+      } catch (err) {
+        alert((err && err.message) || "Kunde inte flytta.");
+      }
+      await this._reloadItems(data.list.entry_id);
+      this._render();
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onEnd);
+    handle.addEventListener("pointercancel", onEnd);
+  }
+
+  // Närmaste scrollbara förälder - panelen ligger i HA:s egna (shadow DOM-)
+  // layout, så det är inte alltid själva dokumentet som scrollar.
+  _scrollParent() {
+    let node = this;
+    while (node) {
+      if (node instanceof Element) {
+        const style = getComputedStyle(node);
+        if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+      }
+      node = node.parentNode || (node instanceof ShadowRoot ? node.host : null);
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+
+  // Vad pekaren är över: en annan uppgift (före/efter, beroende på övre/
+  // nedre halvan) eller - för uppgifter - en sektion som helhet ("into",
+  // t.ex. en tom sektion eller dess rubrik). Sektioner släpps bara på andra
+  // riktiga sektioner, inte på "Utan sektion".
+  _dropTargetAt(kind, x, y, sourceEl) {
+    const el = this.shadowRoot.elementFromPoint(x, y);
+    if (!el) return null;
+    const half = (target) => {
+      const r = target.getBoundingClientRect();
+      return y < r.top + r.height / 2 ? "before" : "after";
+    };
+    if (kind === "item") {
+      const itemEl = el.closest(".ft-item[data-uid]");
+      if (itemEl === sourceEl) return null;
+      if (itemEl) return { el: itemEl, pos: half(itemEl), uid: itemEl.dataset.uid, sectionId: itemEl.dataset.sectionId };
+      const groupEl = el.closest(".ft-section[data-section-id]");
+      if (groupEl && !sourceEl.contains(groupEl)) return { el: groupEl, pos: "into", sectionId: groupEl.dataset.sectionId };
+      return null;
+    }
+    const groupEl = el.closest(".ft-section[data-section-id]");
+    if (!groupEl || groupEl === sourceEl || !groupEl.dataset.sectionId) return null;
+    return { el: groupEl, pos: half(groupEl), sectionId: groupEl.dataset.sectionId };
+  }
+
+  async _dropItem({ list, uid }, target) {
+    const items = this._items[list.entry_id] || [];
+    const others = items.filter((i) => i.uid !== uid);
+    const sectionId = target.sectionId || null;
+    let previousUid;
+    if (target.pos === "into") {
+      // Sist i målsektionen (eller sist i hela listan om sektionen är tom).
+      const inSection = others.filter((i) => (i.section_id || null) === sectionId);
+      const last = inSection.length ? inSection[inSection.length - 1] : others[others.length - 1];
+      previousUid = last ? last.uid : null;
+    } else if (target.pos === "after") {
+      previousUid = target.uid;
+    } else {
+      const idx = others.findIndex((i) => i.uid === target.uid);
+      previousUid = idx > 0 ? others[idx - 1].uid : null;
+    }
+    const msg = { type: "family_todo/move_item", entry_id: list.entry_id, uid, previous_uid: previousUid };
+    // Bara när listan har sektioner - annars finns inget att flytta mellan.
+    if ((this._sections[list.entry_id] || []).length) msg.section_id = sectionId;
+    await this._hass.callWS(msg);
+  }
+
+  async _dropSection({ list, sectionId }, target) {
+    const others = (this._sections[list.entry_id] || []).filter((s) => s.id !== sectionId);
+    let previous;
+    if (target.pos === "after") {
+      previous = target.sectionId;
+    } else {
+      const idx = others.findIndex((s) => s.id === target.sectionId);
+      previous = idx > 0 ? others[idx - 1].id : null;
+    }
+    await this._hass.callWS({
+      type: "family_todo/move_section",
+      entry_id: list.entry_id,
+      section_id: sectionId,
+      previous_section_id: previous,
+    });
+  }
+
   // Kryssrutelista med listans övriga sektioner ("rum") - "Kopiera hit"
   // skapar en fristående kopia av uppgiften i varje ikryssad sektion, se
   // family_todo/copy_item i ws_api.py. Källuppgiften rörs inte. Del av
@@ -826,10 +1289,20 @@ class FamilyTodoPanel extends HTMLElement {
   _renderItem(list, item) {
     const wrap = document.createElement("div");
     wrap.className = "ft-item";
+    wrap.dataset.uid = item.uid;
+    wrap.dataset.sectionId = item.section_id || "";
     const done = item.status === "completed";
 
     const row = document.createElement("div");
     row.className = "ft-item-row";
+    // Dra-och-släpp bara i "Egen ordning" - i en sorterad vy finns ingen
+    // meningsfull plats att släppa på, ordningen kommer ju från sorteringen.
+    if (this._prefsFor(list.entry_id).sort === "manual") {
+      wrap.classList.add("ft-has-handle");
+      row.appendChild(this._mkDragHandle("Dra för att flytta", (ev) =>
+        this._startDrag(ev, "item", { list, uid: item.uid })
+      ));
+    }
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = done;
@@ -847,6 +1320,13 @@ class FamilyTodoPanel extends HTMLElement {
       this._render();
     });
     row.appendChild(checkbox);
+
+    if (item.quantity) {
+      const qty = document.createElement("span");
+      qty.className = "ft-qty";
+      qty.textContent = item.quantity;
+      row.appendChild(qty);
+    }
 
     const summary = document.createElement("div");
     summary.className = "ft-item-summary" + (done ? " done" : "");
@@ -897,7 +1377,7 @@ class FamilyTodoPanel extends HTMLElement {
 
     wrap.appendChild(row);
 
-    if (item.assignee || item.due || item.recurrence || item.last_completed) {
+    if (item.assignee || item.due || item.recurrence) {
       const meta = document.createElement("div");
       meta.className = "ft-item-meta";
       if (item.assignee) meta.innerHTML += `<span><ha-icon icon="mdi:account"></ha-icon> ${_esc(item.assignee)}</span>`;
@@ -911,8 +1391,6 @@ class FamilyTodoPanel extends HTMLElement {
       }
       if (item.recurrence)
         meta.innerHTML += `<span><ha-icon icon="mdi:repeat"></ha-icon> ${_esc(_recurrenceLabel(item.recurrence))}</span>`;
-      if (item.last_completed)
-        meta.innerHTML += `<span><ha-icon icon="mdi:check"></ha-icon> Senast: ${_esc(item.last_completed)}</span>`;
       wrap.appendChild(meta);
     }
 
@@ -1222,7 +1700,35 @@ class FamilyTodoPanel extends HTMLElement {
     // doesn't need a deadline or an assignee) - a shopping-type list skips
     // straight from section to the copy-to-room picker below, keeping the
     // faster add/check-off flow the list type is for.
-    if (list.list_type !== "shopping") {
+    if (list.list_type === "shopping") {
+      const qtyRow = document.createElement("div");
+      qtyRow.className = "ft-row";
+      qtyRow.innerHTML = `<span>Antal:</span>`;
+      const qtyInput = document.createElement("input");
+      qtyInput.type = "text";
+      qtyInput.placeholder = "t.ex. 2 eller 500 g";
+      qtyInput.value = item.quantity || "";
+      qtyRow.appendChild(qtyInput);
+      const qtySave = document.createElement("button");
+      qtySave.className = "secondary";
+      qtySave.textContent = "Spara";
+      const saveQty = async () => {
+        await this._hass.callWS({
+          type: "family_todo/set_item_extra",
+          entry_id: list.entry_id,
+          uid: item.uid,
+          quantity: qtyInput.value.trim() || null,
+        });
+        await this._reloadItems(list.entry_id);
+        this._render();
+      };
+      qtySave.addEventListener("click", saveQty);
+      qtyInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") saveQty();
+      });
+      qtyRow.appendChild(qtySave);
+      detail.appendChild(qtyRow);
+    } else {
       detail.appendChild(this._renderDueEditor(list, item));
 
       const assigneeRow = document.createElement("div");
@@ -1322,6 +1828,58 @@ function _formatDue(due) {
   const datePart = d.toLocaleDateString("sv-SE");
   if (!hasTime) return datePart;
   return `${datePart} ${d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+const _FIXED_TABS = ["__new__", "__notify__", "__week__"];
+const _VIEW_PREFS_KEY = "family_todo_view_prefs";
+
+function _loadViewPrefs() {
+  try {
+    return JSON.parse(localStorage.getItem(_VIEW_PREFS_KEY)) || {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function _saveViewPrefs(prefs) {
+  try {
+    localStorage.setItem(_VIEW_PREFS_KEY, JSON.stringify(prefs));
+  } catch (err) {
+    // Privat läge/blockerad lagring - inställningen gäller då bara tills sidan laddas om.
+  }
+}
+
+function _pad(n) {
+  return String(n).padStart(2, "0");
+}
+
+function _isoDate(d) {
+  return `${d.getFullYear()}-${_pad(d.getMonth() + 1)}-${_pad(d.getDate())}`;
+}
+
+function _mondayOf(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return x;
+}
+
+function _isoWeek(d) {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+}
+
+// "Ons 14 okt" (+ klockslag om satt) - Veckan-flikens dagsetikett.
+function _formatDayLabel(due) {
+  if (!due) return "";
+  const hasTime = _hasDueTime(due);
+  const d = new Date(hasTime ? due : `${due}T00:00`);
+  if (isNaN(d.getTime())) return due;
+  const day = d.toLocaleDateString("sv-SE", { weekday: "short", day: "numeric", month: "short" });
+  const label = day.charAt(0).toUpperCase() + day.slice(1);
+  return hasTime ? `${label} ${d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit" })}` : label;
 }
 
 function _defaultListIcon(list) {

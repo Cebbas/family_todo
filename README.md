@@ -32,7 +32,14 @@ Skapar riktiga att-göra-listor i Home Assistant:
   återkommande och delsteg för den, så lägg-till/bocka-av-flödet blir
   snabbare när du står i butiken. Sektioner funkar fortfarande, praktiskt
   som hylla-/butiksgruppering. Byt typ i efterhand genom att döpa om/
-  redigera listan i panelen.
+  redigera listan i panelen. Inköpslistor har ett eget **Antal**-fält per
+  vara och kan få **förvalda butikskategorier** – se "Inköpslistor" nedan
+- se **veckans sysslor per person** i panelens **Veckan**-flik, tvärs över
+  alla att-göra-listor, och bocka av dem direkt där
+- **dra och släpp** uppgifter (även till en annan sektion) och sektioner
+  för att ändra ordning – funkar med touch i HA-appen också
+- **filtrera** en lista på tilldelad person och **sortera** på
+  förfallodatum, tilldelad eller namn
 
 ## Känd begränsning: delsteg och tilldelning syns bara i panelen
 
@@ -125,8 +132,6 @@ att den bara blir kvar som avklarad:
    förfallodatum (eller från idag om inget fanns)
 3. Eventuella delsteg nollställs, så nästa omgång börjar med en tom
    checklista
-4. Datumet du senast bockade av den sparas ("Senast: ...", synligt i
-   panelen)
 
 Att bocka **ur** en redan avklarad uppgift (ångra) rullar inte vidare –
 bara den faktiska övergången till "klar" gör det. Stäng av "Återkommande"
@@ -182,6 +187,42 @@ som innan sektioner fanns.
 Tar du bort en sektion tas bara grupperingen bort – uppgifterna i den
 finns kvar, bara omärkta ("Utan sektion").
 
+Ordningen ändras med dra-och-släpp: ta tag i handtaget (⋮⋮) till vänster
+om en uppgift och släpp den på en annan uppgift (före/efter), eller på en
+sektion för att lägga den sist där. Sektioner flyttas på samma sätt via
+handtaget i sektionsrubriken. Uppgifter går bara att dra när listan visas
+i "Egen ordning" (se **Sortera** ovanför uppgifterna).
+
+## Inköpslistor
+
+- **Antal**: skriv mängden i det lilla Antal-fältet bredvid "Ny vara"
+  (fritext, t.ex. "2" eller "500 g"), eller ändra den senare genom att
+  klicka på varan.
+- **Butikskategorier**: knappen **"Lägg till butikskategorier"** skapar
+  sektionerna Frukt & grönt, Bröd, Mejeri, Kött & fisk, Frys, Skafferi,
+  Dryck, Hushåll och Hygien (de som redan finns hoppas över). Därefter
+  sorteras nya varor in automatiskt utifrån nyckelord ("lättmjölk" →
+  Mejeri), även när de läggs till via röstassistenten eller HA:s eget
+  todo-kort. Välj en sektion eller "Ingen sektion" i rullgardinen för att
+  gå förbi gissningen. Kategorierna är vanliga sektioner och går att döpa
+  om, flytta och ta bort som vilka andra som helst.
+
+## Veckan
+
+Fliken **Veckan** visar alla oavbockade uppgifter från dina att-göra-
+listor som förfaller den valda veckan, grupperade per tilldelad person
+(sist "Ej tilldelade"). Delsteg med eget förfallodatum visas som egna
+rader. För innevarande vecka tas även försenade uppgifter med (i rött).
+Bläddra med pilarna, bocka av direkt i vyn, eller klicka på listnamnet för
+att hoppa till uppgiften i sin lista.
+
+## Om en lista inte går att läsa in
+
+Om en listas sparade data är delvis trasig (t.ex. efter en manuell
+redigering i `.storage/`) visas det som går att läsa, och ett ärende
+dyker upp under **Inställningar → Reparationer**. Originaldatan sparas
+oförändrad i `.storage/family_todo_list_<id>.backup_<tidpunkt>`.
+
 ## Tester
 
 Modell-/entitetslogik (listmodell, sektioner, CRUD, ordning,
@@ -210,11 +251,14 @@ custom_components/
     __init__.py      # setup, registrerar panel + ws-api, städar lagring vid borttag
     todo.py             # todo.*-entiteten per lista (CRUD, ordning)
     store.py               # ren datamodell (TodoListData/TodoItemData/Section/Subtask/Recurrence) + HA-lagring
+    categories.py          # förvalda butikskategorier + nyckelordsgissning för inköpslistor
+    agenda.py              # tvärs-över-listor-översikt för Veckan-fliken
     config_flow.py            # skapa ny lista (formulär, eller direkt från panelen)
     panel.py                     # registrerar sidopanelen + statiska filer
     ws_api.py                       # websocket-kommandon som panelen använder
     notify_map.py                      # global person -> notify.*-tjänst-mappning (Notiser-tabben)
     reminders.py                          # periodisk koll som skickar förfallo-påminnelser
+    diagnostics.py                        # diagnostikexport per lista
     const.py
     manifest.json
     strings.json

@@ -289,3 +289,62 @@ def test_combine_then_split_round_trips_and_never_duplicates_on_repeated_calls()
         description = combine_description(split_description(description), "Anna", [Subtask("s1", "x", complete=True)])
     assert description.count("⸻ Family Todo ⸻") == 1
     assert description == "Städa\n\n⸻ Family Todo ⸻\n👤 Anna\n☑️ 1/1 delsteg klara"
+
+
+# ---- section ordering ----
+
+def test_move_section_to_start_and_after():
+    model = TodoListData()
+    for sid in ("a", "b", "c"):
+        model.add_section(Section(id="", name=sid), section_id=sid)
+    model.move_section("c", None)
+    assert [s.id for s in model.sections] == ["c", "a", "b"]
+    model.move_section("c", "b")
+    assert [s.id for s in model.sections] == ["a", "b", "c"]
+    model.move_section("missing", None)  # no-op
+    assert [s.id for s in model.sections] == ["a", "b", "c"]
+
+
+# ---- quantity / category ----
+
+def test_quantity_and_category_round_trip_through_dict():
+    model = TodoListData()
+    model.add(_item(uid="x", quantity="2 l"), uid="x")
+    model.add_section(Section(id="", name="Mejeri", category="dairy"), section_id="m")
+    restored = TodoListData.from_dict(model.to_dict())
+    assert restored.get("x").quantity == "2 l"
+    assert restored.get_section("m").category == "dairy"
+
+
+def test_combine_description_includes_quantity_first():
+    assert combine_description(None, "Naomi", [], "3 st") == "⸻ Family Todo ⸻\n🔢 3 st\n👤 Naomi"
+
+
+# ---- tolerant loading (see FamilyTodoStore / repair issue) ----
+
+def test_from_dict_skips_broken_items_and_reports_them():
+    data = {
+        "items": {
+            "ok": {"uid": "ok", "summary": "Fungerar"},
+            "bad": {"summary": "saknar uid"},
+            "worse": "inte ett objekt",
+        },
+        "order": ["ok", "bad", "worse"],
+        "sections": {"s": {"name": "saknar id"}},
+    }
+    model = TodoListData.from_dict(data)
+    assert [i.uid for i in model.items] == ["ok"]
+    assert model.sections == []
+    assert len(model.load_errors) == 3
+
+
+def test_from_dict_wrong_top_level_types_reported_not_raised():
+    model = TodoListData.from_dict({"items": [], "order": "nej"})
+    assert model.items == []
+    assert len(model.load_errors) == 2
+    assert TodoListData.from_dict(["helt", "fel"]).load_errors
+
+
+def test_from_dict_clean_data_has_no_load_errors():
+    assert TodoListData.from_dict({"items": {}, "order": []}).load_errors == []
+    assert TodoListData.from_dict(None).load_errors == []

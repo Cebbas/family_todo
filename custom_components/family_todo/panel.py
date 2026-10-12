@@ -41,7 +41,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
                 "name": "family-todo-panel",
                 "embed_iframe": False,
                 "trust_external": True,
-                "js_url": f"{_STATIC_URL}/family-todo-panel.js?v=3",
+                "js_url": f"{_STATIC_URL}/family-todo-panel.js?v=4",
             }
         },
         require_admin=False,

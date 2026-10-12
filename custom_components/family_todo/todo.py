@@ -24,6 +24,7 @@ from .const import (
     DOMAIN,
     LIST_TYPE_SHOPPING,
 )
+from .categories import guess_section_id
 from .store import FamilyTodoStore, Subtask, TodoItemData, combine_description, split_description
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ _SUPPORTED_FEATURES = (
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    store = FamilyTodoStore(hass, entry.entry_id)
+    store = FamilyTodoStore(hass, entry.entry_id, entry.data.get(CONF_NAME, entry.title))
     await store.async_load()
     entity = FamilyTodoListEntity(entry, store)
     hass.data[DOMAIN][entry.entry_id]["entity"] = entity
@@ -96,13 +97,25 @@ class FamilyTodoListEntity(TodoListEntity):
 
     async def async_create_todo_item(self, item: TodoItem) -> None:
         model = self._model()
+        summary = item.summary or ""
+        # Inköpslista med butikskategorier (se categories.py): sortera in
+        # varan i rätt kategori direkt - gäller även varor som läggs till via
+        # röstassistenten eller HA:s eget todo-kort, inte bara panelen.
+        # ws_create_item skriver över section_id efteråt om panelen valt en
+        # sektion uttryckligen.
+        section_id = (
+            guess_section_id(summary, model.sections)
+            if self._entry.data.get(CONF_LIST_TYPE) == LIST_TYPE_SHOPPING
+            else None
+        )
         model.add(
             TodoItemData(
                 uid="",
-                summary=item.summary or "",
+                summary=summary,
                 status=(item.status or TodoItemStatus.NEEDS_ACTION).value,
                 description=item.description,
                 due=item.due.isoformat() if item.due else None,
+                section_id=section_id,
             )
         )
         await self._store.async_save()
@@ -119,6 +132,7 @@ class FamilyTodoListEntity(TodoListEntity):
         # description-fältet oförändrat, gradvis duplicera blocket.
         user_text = split_description(item.description)
         assignee = existing.assignee if existing else None
+        quantity = existing.quantity if existing else None
 
         if (
             existing is not None
@@ -152,7 +166,7 @@ class FamilyTodoListEntity(TodoListEntity):
                 item.uid,
                 summary=item.summary,
                 status=TodoItemStatus.NEEDS_ACTION.value,
-                description=combine_description(user_text, assignee, reset_subtasks),
+                description=combine_description(user_text, assignee, reset_subtasks, quantity),
                 due=next_due.isoformat(),
                 last_completed=today.isoformat(),
                 subtasks=reset_subtasks,
@@ -170,7 +184,7 @@ class FamilyTodoListEntity(TodoListEntity):
                 item.uid,
                 summary=item.summary,
                 status=new_status,
-                description=combine_description(user_text, assignee, subtasks),
+                description=combine_description(user_text, assignee, subtasks, quantity),
                 due=due,
                 reminder_sent=False if due_changed else existing.reminder_sent,
             )

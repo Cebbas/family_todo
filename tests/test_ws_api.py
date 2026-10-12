@@ -431,3 +431,238 @@ def test_entry_to_dict_defaults_list_type_to_tasks_for_older_entries():
 def test_entry_to_dict_reads_shopping_list_type():
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_NAME: "Mat", CONF_LIST_TYPE: "shopping"})
     assert ws_api._entry_to_dict(entry)["list_type"] == "shopping"
+
+
+# ---- drag-and-drop: move_item with section change, move_section ----
+
+
+async def test_move_item_into_other_section_and_position(hass):
+    entity = await _make_list(hass, "list1")
+    kok, bad = _add_sections(entity, "Kök", "Badrum")
+    for summary in ("A", "B", "C"):
+        await ws_api.ws_create_item.__wrapped__(
+            hass, _FakeConnection(), {"id": 1, "entry_id": "list1", "summary": summary, "section_id": kok.id}
+        )
+    a, b, c = (i.uid for i in entity.todo_items)
+
+    connection = _FakeConnection()
+    await ws_api.ws_move_item.__wrapped__(
+        hass, connection, {"id": 2, "entry_id": "list1", "uid": c, "previous_uid": None, "section_id": bad.id}
+    )
+
+    assert connection.error is None
+    assert [i.uid for i in entity.todo_items] == [c, a, b]
+    assert entity._model().get(c).section_id == bad.id
+
+
+async def test_move_item_to_unsectioned_with_null(hass):
+    entity = await _make_list(hass, "list1")
+    (kok,) = _add_sections(entity, "Kök")
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 1, "entry_id": "list1", "summary": "A", "section_id": kok.id}
+    )
+    uid = entity.todo_items[0].uid
+    await ws_api.ws_move_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 2, "entry_id": "list1", "uid": uid, "section_id": None}
+    )
+    assert entity._model().get(uid).section_id is None
+
+
+async def test_move_item_without_section_id_keeps_section(hass):
+    entity = await _make_list(hass, "list1")
+    (kok,) = _add_sections(entity, "Kök")
+    for summary in ("A", "B"):
+        await ws_api.ws_create_item.__wrapped__(
+            hass, _FakeConnection(), {"id": 1, "entry_id": "list1", "summary": summary, "section_id": kok.id}
+        )
+    a, b = (i.uid for i in entity.todo_items)
+    await ws_api.ws_move_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 2, "entry_id": "list1", "uid": b, "previous_uid": None}
+    )
+    assert [i.uid for i in entity.todo_items] == [b, a]
+    assert entity._model().get(b).section_id == kok.id
+
+
+async def test_move_section_reorders(hass):
+    entity = await _make_list(hass, "list1")
+    a, b, c = _add_sections(entity, "A", "B", "C")
+    connection = _FakeConnection()
+    await ws_api.ws_move_section.__wrapped__(
+        hass, connection, {"id": 1, "entry_id": "list1", "section_id": a.id, "previous_section_id": c.id}
+    )
+    assert connection.error is None
+    assert [s.name for s in entity._model().sections] == ["B", "C", "A"]
+
+
+# ---- shopping: quantity, preset categories, auto-categorisation ----
+
+
+async def _make_shopping_list(hass, entry_id="shop"):
+    entity = await _make_list(hass, entry_id)
+    hass.config_entries.async_update_entry(
+        hass.config_entries.async_get_entry(entry_id),
+        data={**hass.config_entries.async_get_entry(entry_id).data, CONF_LIST_TYPE: "shopping"},
+    )
+    return entity
+
+
+async def test_add_preset_categories_is_idempotent_and_respects_existing_names(hass):
+    entity = await _make_shopping_list(hass)
+    _add_sections(entity, "Mejeri")
+
+    connection = _FakeConnection()
+    await ws_api.ws_add_preset_categories.__wrapped__(hass, connection, {"id": 1, "entry_id": "shop"})
+    created = connection.result["sections"]
+    assert "Mejeri" not in [s["name"] for s in created]
+    assert all(s["category"] for s in created)
+
+    connection = _FakeConnection()
+    await ws_api.ws_add_preset_categories.__wrapped__(hass, connection, {"id": 2, "entry_id": "shop"})
+    assert connection.result["sections"] == []
+
+
+async def test_new_shopping_item_is_auto_categorised(hass):
+    entity = await _make_shopping_list(hass)
+    await ws_api.ws_add_preset_categories.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "shop"})
+    dairy = next(s for s in entity._model().sections if s.category == "dairy")
+
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 2, "entry_id": "shop", "summary": "Lättmjölk"}
+    )
+    assert entity._model().items[-1].section_id == dairy.id
+
+
+async def test_explicit_no_section_overrides_auto_category(hass):
+    entity = await _make_shopping_list(hass)
+    await ws_api.ws_add_preset_categories.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "shop"})
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 2, "entry_id": "shop", "summary": "Mjölk", "section_id": None}
+    )
+    assert entity._model().items[-1].section_id is None
+
+
+async def test_task_list_items_are_not_auto_categorised(hass):
+    entity = await _make_list(hass, "tasks")
+    _add_sections(entity, "Mejeri")
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 1, "entry_id": "tasks", "summary": "Mjölk"}
+    )
+    assert entity._model().items[-1].section_id is None
+
+
+async def test_quantity_on_create_and_set_item_extra_is_mirrored_to_description(hass):
+    entity = await _make_shopping_list(hass)
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 1, "entry_id": "shop", "summary": "Ägg", "quantity": " 12 st "}
+    )
+    item = entity._model().items[-1]
+    assert item.quantity == "12 st"
+    assert "🔢 12 st" in entity.todo_items[-1].description
+
+    await ws_api.ws_set_item_extra.__wrapped__(
+        hass, _FakeConnection(), {"id": 2, "entry_id": "shop", "uid": item.uid, "quantity": ""}
+    )
+    assert entity._model().get(item.uid).quantity is None
+    assert entity.todo_items[-1].description is None
+
+
+# ---- agenda / complete_item / complete_subtask ----
+
+
+async def test_agenda_collects_from_all_lists(hass):
+    e1 = await _make_list(hass, "l1")
+    e2 = await _make_list(hass, "l2")
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 1, "entry_id": "l1", "summary": "Ett", "due": "2026-10-13"}
+    )
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 1, "entry_id": "l2", "summary": "Två", "due": "2026-10-14"}
+    )
+    connection = _FakeConnection()
+    await ws_api.ws_agenda.__wrapped__(
+        hass, connection, {"id": 2, "start": "2026-10-12", "end": "2026-10-18", "include_overdue": True}
+    )
+    assert [(r["entry_id"], r["summary"]) for r in connection.result["items"]] == [("l1", "Ett"), ("l2", "Två")]
+
+
+async def test_agenda_rejects_bad_dates(hass):
+    connection = _FakeConnection()
+    await ws_api.ws_agenda.__wrapped__(
+        hass, connection, {"id": 1, "start": "igår", "end": "2026-10-18", "include_overdue": True}
+    )
+    assert connection.error[0] == "invalid_input"
+
+
+async def test_complete_item_rolls_recurring_item_forward(hass):
+    entity = await _make_list(hass, "l1")
+    await ws_api.ws_create_item.__wrapped__(
+        hass,
+        _FakeConnection(),
+        {"id": 1, "entry_id": "l1", "summary": "Byt lakan", "due": "2026-10-12",
+         "recurrence": {"interval": 2, "unit": "weeks"}},
+    )
+    uid = entity.todo_items[0].uid
+    connection = _FakeConnection()
+    await ws_api.ws_complete_item.__wrapped__(hass, connection, {"id": 2, "entry_id": "l1", "uid": uid})
+    item = entity._model().get(uid)
+    assert connection.error is None
+    assert item.status == "needs_action"
+    assert item.due == "2026-10-26"
+
+
+async def test_complete_item_plain(hass):
+    entity = await _make_list(hass, "l1")
+    await ws_api.ws_create_item.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "l1", "summary": "X"})
+    uid = entity.todo_items[0].uid
+    await ws_api.ws_complete_item.__wrapped__(hass, _FakeConnection(), {"id": 2, "entry_id": "l1", "uid": uid})
+    assert entity._model().get(uid).status == "completed"
+
+
+async def test_complete_subtask_marks_or_rolls(hass):
+    from custom_components.family_todo.store import Recurrence, Subtask
+
+    entity = await _make_list(hass, "l1")
+    await ws_api.ws_create_item.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "l1", "summary": "Växter"})
+    uid = entity.todo_items[0].uid
+    entity._model().update(
+        uid,
+        subtasks=[
+            Subtask(id="s1", summary="Vattna", due="2026-10-12", recurrence=Recurrence(3, "days")),
+            Subtask(id="s2", summary="Gödsla"),
+        ],
+    )
+    for sid in ("s1", "s2"):
+        connection = _FakeConnection()
+        await ws_api.ws_complete_subtask.__wrapped__(
+            hass, connection, {"id": 2, "entry_id": "l1", "uid": uid, "subtask_id": sid}
+        )
+        assert connection.error is None
+    s1, s2 = entity._model().get(uid).subtasks
+    assert (s1.complete, s1.due) == (False, "2026-10-15")
+    assert s2.complete is True
+    assert "1/2 delsteg klara" in entity.todo_items[0].description
+
+
+async def test_complete_subtask_unknown_id(hass):
+    entity = await _make_list(hass, "l1")
+    await ws_api.ws_create_item.__wrapped__(hass, _FakeConnection(), {"id": 1, "entry_id": "l1", "summary": "X"})
+    connection = _FakeConnection()
+    await ws_api.ws_complete_subtask.__wrapped__(
+        hass, connection, {"id": 2, "entry_id": "l1", "uid": entity.todo_items[0].uid, "subtask_id": "nope"}
+    )
+    assert connection.error[0] == "not_found"
+
+
+async def test_child_blocked_from_completing_in_another_persons_list(hass):
+    hass.data["family_planner"] = _FakePersonsStore(
+        [{"name": "Nadine", "ha_user_id": "nadine-uid", "role": "child"}]
+    )
+    entity = await _make_list(hass, "naomis_list", owner_user_id="naomi-uid")
+    await ws_api.ws_create_item.__wrapped__(
+        hass, _FakeConnection(), {"id": 1, "entry_id": "naomis_list", "summary": "X"}
+    )
+    connection = _FakeConnection(user_id="nadine-uid")
+    await ws_api.ws_complete_item.__wrapped__(
+        hass, connection, {"id": 2, "entry_id": "naomis_list", "uid": entity.todo_items[0].uid}
+    )
+    assert connection.error[0] == "unauthorized"

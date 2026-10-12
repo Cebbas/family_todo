@@ -23,5 +23,11 @@
         "shopping": "Inköpslista"
       }
     }
+  },
+  "issues": {
+    "corrupt_list": {
+      "title": "Att göra-listan \"{name}\" kunde inte läsas in helt",
+      "description": "{count} poster i listan \"{name}\" hade ett format som inte gick att tolka och visas därför inte. Resten av listan fungerar som vanligt.\n\nOriginaldatan, inklusive de trasiga posterna, är oförändrad sparad i `{backup}` i Home Assistants konfigurationsmapp. Den behövs om du vill återställa något för hand.\n\nÄrendet försvinner av sig självt nästa gång listan läses in utan fel, alltså efter en omstart när listan har sparats om."
+    }
   }
 }

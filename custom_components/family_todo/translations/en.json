@@ -23,5 +23,11 @@
         "shopping": "Shopping list"
       }
     }
+  },
+  "issues": {
+    "corrupt_list": {
+      "title": "The to-do list \"{name}\" could not be fully loaded",
+      "description": "{count} entries in the list \"{name}\" had a format that could not be read and are not shown. The rest of the list works as usual.\n\nThe original data, including the broken entries, is saved unchanged in `{backup}` in your Home Assistant configuration folder, in case you want to restore something by hand.\n\nThis issue clears itself the next time the list loads without errors (i.e. after a restart once the list has been saved again)."
+    }
   }
 }

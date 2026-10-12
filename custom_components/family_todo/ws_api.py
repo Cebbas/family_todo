@@ -14,6 +14,8 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.util import dt as dt_util
 
+from .agenda import collect_agenda
+from .categories import PRESET_CATEGORIES, section_category
 from .const import (
     CONF_COLOR,
     CONF_ICON,
@@ -83,11 +85,18 @@ def _item_to_dict(item) -> dict:
         "recurrence": item.recurrence.to_dict() if item.recurrence else None,
         "last_completed": item.last_completed,
         "reminder_sent": item.reminder_sent,
+        "quantity": item.quantity,
     }
 
 
 def _section_to_dict(section) -> dict:
-    return {"id": section.id, "name": section.name, "area_id": section.area_id, "icon": section.icon}
+    return {
+        "id": section.id,
+        "name": section.name,
+        "area_id": section.area_id,
+        "icon": section.icon,
+        "category": section.category,
+    }
 
 
 def _parse_due(value: str | None):
@@ -250,8 +259,11 @@ async def ws_list_items(hass: HomeAssistant, connection, msg):
         vol.Required("summary"): str,
         vol.Optional("description"): vol.Any(str, None),
         vol.Optional("due"): vol.Any(str, None),
+        # Utelämnat = låt inköpslistans automatiska kategorisering välja (se
+        # todo.py:async_create_todo_item), null = uttryckligen "Ingen sektion".
         vol.Optional("section_id"): vol.Any(str, None),
         vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
+        vol.Optional("quantity"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -280,10 +292,13 @@ async def ws_create_item(hass: HomeAssistant, connection, msg):
         )
     )
     extra_changes: dict = {}
-    if msg.get("section_id"):
-        extra_changes["section_id"] = msg["section_id"]
+    if "section_id" in msg:
+        extra_changes["section_id"] = msg["section_id"] or None
     if recurrence is not None:
         extra_changes["recurrence"] = recurrence
+    quantity = (msg.get("quantity") or "").strip() or None
+    if quantity:
+        extra_changes["quantity"] = quantity
     if extra_changes:
         # async_create_todo_item ovan har redan lagt till uppgiften sist i
         # samma delade store/modell - sätt utökningsfälten direkt istället
@@ -292,6 +307,10 @@ async def ws_create_item(hass: HomeAssistant, connection, msg):
         # "skapa direkt med sektion/upprepning"-flöde i panelen).
         model = await store.async_load()
         new_item = model.items[-1]
+        if quantity:
+            extra_changes["description"] = combine_description(
+                split_description(new_item.description), new_item.assignee, new_item.subtasks, quantity
+            )
         model.update(new_item.uid, **extra_changes)
         await store.async_save()
         entity.async_write_ha_state()
@@ -354,16 +373,27 @@ async def ws_delete_item(hass: HomeAssistant, connection, msg):
         vol.Required("entry_id"): str,
         vol.Required("uid"): str,
         vol.Optional("previous_uid"): vol.Any(str, None),
+        # Med: flytta även till den här sektionen (null = "Utan sektion") i
+        # samma anrop - panelens dra-och-släpp mellan sektioner.
+        vol.Optional("section_id"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
 async def ws_move_item(hass: HomeAssistant, connection, msg):
     entity = _get_entity(hass, msg["entry_id"])
-    if entity is None:
+    store = _get_store(hass, msg["entry_id"])
+    if entity is None or store is None:
         connection.send_error(msg["id"], "not_found", "Listan hittades inte")
         return
     if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
         return
+    if "section_id" in msg:
+        model = await store.async_load()
+        if model.get(msg["uid"]) is None:
+            connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")
+            return
+        model.update(msg["uid"], section_id=msg["section_id"] or None)
+    # Sparar (och skriver HA-state) även för sektionsbytet ovan.
     await entity.async_move_todo_item(msg["uid"], msg.get("previous_uid"))
     connection.send_result(msg["id"], {"ok": True})
 
@@ -410,6 +440,7 @@ def _roll_recurring_subtasks(old_subtasks: list, new_subtasks: list) -> list:
         vol.Optional("subtasks"): [SUBTASK_SCHEMA],
         vol.Optional("section_id"): vol.Any(str, None),
         vol.Optional("recurrence"): vol.Any(RECURRENCE_SCHEMA, None),
+        vol.Optional("quantity"): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
@@ -444,14 +475,17 @@ async def ws_set_item_extra(hass: HomeAssistant, connection, msg):
         changes["section_id"] = msg["section_id"]
     if "recurrence" in msg:
         changes["recurrence"] = Recurrence.from_dict(msg["recurrence"]) if msg["recurrence"] else None
-    if "assignee" in changes or "subtasks" in changes:
+    if "quantity" in msg:
+        changes["quantity"] = (msg["quantity"] or "").strip() or None
+    if "assignee" in changes or "subtasks" in changes or "quantity" in changes:
         # Håll description-sammanfattningen (syns i HA:s eget todo-kort
         # och för röstassistenten) i synk med den nya tilldelningen/
-        # delstegen - se combine_description i store.py.
-        new_assignee = changes.get("assignee", item.assignee)
-        new_subtasks = changes.get("subtasks", item.subtasks)
+        # delstegen/mängden - se combine_description i store.py.
         changes["description"] = combine_description(
-            split_description(item.description), new_assignee, new_subtasks
+            split_description(item.description),
+            changes.get("assignee", item.assignee),
+            changes.get("subtasks", item.subtasks),
+            changes.get("quantity", item.quantity),
         )
     model.update(msg["uid"], **changes)
     await store.async_save()
@@ -509,12 +543,13 @@ async def ws_copy_item(hass: HomeAssistant, connection, msg):
                 uid="",
                 summary=source.summary,
                 status="needs_action",
-                description=combine_description(user_text, source.assignee, new_subtasks),
+                description=combine_description(user_text, source.assignee, new_subtasks, source.quantity),
                 due=source.due,
                 assignee=source.assignee,
                 subtasks=new_subtasks,
                 section_id=section_id,
                 recurrence=source.recurrence,
+                quantity=source.quantity,
             )
         )
         created_uids.append(copy.uid)
@@ -616,6 +651,176 @@ async def ws_delete_section(hass: HomeAssistant, connection, msg):
     model = await store.async_load()
     model.delete_section(msg["section_id"])
     await store.async_save()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/move_section",
+        vol.Required("entry_id"): str,
+        vol.Required("section_id"): str,
+        vol.Optional("previous_section_id"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_move_section(hass: HomeAssistant, connection, msg):
+    """Ändrar sektionsordningen - panelens dra-och-släpp av sektionsrubriker."""
+    store = _get_store(hass, msg["entry_id"])
+    if store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
+    model = await store.async_load()
+    model.move_section(msg["section_id"], msg.get("previous_section_id"))
+    await store.async_save()
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/add_preset_categories", vol.Required("entry_id"): str}
+)
+@websocket_api.async_response
+async def ws_add_preset_categories(hass: HomeAssistant, connection, msg):
+    """Skapar de förvalda butikskategorierna (categories.py) som saknas i listan.
+
+    En kategori räknas som redan befintlig om någon sektion har den som
+    `category` eller heter exakt som den (se section_category) - så att
+    trycka på knappen igen, eller efter att ha skapat "Mejeri" för hand,
+    aldrig ger dubbletter.
+    """
+    store = _get_store(hass, msg["entry_id"])
+    if store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
+    model = await store.async_load()
+    existing = {section_category(s) for s in model.sections}
+    created = []
+    for preset in PRESET_CATEGORIES:
+        if preset["key"] in existing:
+            continue
+        section = model.add_section(
+            Section(id="", name=preset["name"], icon=preset["icon"], category=preset["key"])
+        )
+        created.append(_section_to_dict(section))
+    if created:
+        await store.async_save()
+    connection.send_result(msg["id"], {"sections": created})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/agenda",
+        vol.Required("start"): str,
+        vol.Required("end"): str,
+        vol.Optional("include_overdue", default=True): bool,
+        vol.Optional("today"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_agenda(hass: HomeAssistant, connection, msg):
+    """Oavklarade uppgifter/delsteg som förfaller mellan start och end, från alla listor.
+
+    Datumen skickas av klienten (ISO, lokal tid) så att "den här veckan"/
+    "idag" alltid räknas i webbläsarens tidszon - se agenda.py.
+    """
+    try:
+        start = date.fromisoformat(msg["start"])
+        end = date.fromisoformat(msg["end"])
+        today = date.fromisoformat(msg["today"]) if msg.get("today") else dt_util.now().date()
+    except ValueError:
+        connection.send_error(msg["id"], "invalid_input", "Ogiltigt datum")
+        return
+    lists = []
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        store = _get_store(hass, entry.entry_id)
+        if store is None:
+            continue
+        lists.append((_entry_to_dict(entry), await store.async_load()))
+    rows = collect_agenda(lists, start, end, include_overdue=msg["include_overdue"], today=today)
+    connection.send_result(msg["id"], {"items": rows})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/complete_item",
+        vol.Required("entry_id"): str,
+        vol.Required("uid"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_complete_item(hass: HomeAssistant, connection, msg):
+    """Bockar av en uppgift utan att klienten behöver skicka med resten av fälten.
+
+    För vyer som bara har en rad att bocka av (Veckan-fliken,
+    family-planner-card). Går via entitetens vanliga uppdatering, så
+    återkommande uppgifter rullar vidare precis som överallt annars.
+    """
+    entity = _get_entity(hass, msg["entry_id"])
+    store = _get_store(hass, msg["entry_id"])
+    if entity is None or store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
+    model = await store.async_load()
+    item = model.get(msg["uid"])
+    if item is None:
+        connection.send_error(msg["id"], "not_found", "Uppgiften hittades inte")
+        return
+    await entity.async_update_todo_item(
+        TodoItem(
+            uid=item.uid,
+            summary=item.summary,
+            status=TodoItemStatus.COMPLETED,
+            description=item.description,
+            due=_parse_due(item.due),
+        )
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/complete_subtask",
+        vol.Required("entry_id"): str,
+        vol.Required("uid"): str,
+        vol.Required("subtask_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_complete_subtask(hass: HomeAssistant, connection, msg):
+    """Som complete_item, fast för ett enskilt delsteg (rullar om det är återkommande)."""
+    entity = _get_entity(hass, msg["entry_id"])
+    store = _get_store(hass, msg["entry_id"])
+    if entity is None or store is None:
+        connection.send_error(msg["id"], "not_found", "Listan hittades inte")
+        return
+    if not await _require_list_write_access(hass, connection, msg, msg["entry_id"]):
+        return
+    model = await store.async_load()
+    item = model.get(msg["uid"])
+    if item is None or not any(s.id == msg["subtask_id"] for s in item.subtasks):
+        connection.send_error(msg["id"], "not_found", "Delsteget hittades inte")
+        return
+    updated = [
+        Subtask(id=s.id, summary=s.summary, complete=True, due=s.due, recurrence=s.recurrence)
+        if s.id == msg["subtask_id"]
+        else s
+        for s in item.subtasks
+    ]
+    subtasks = _roll_recurring_subtasks(item.subtasks, updated)
+    model.update(
+        item.uid,
+        subtasks=subtasks,
+        description=combine_description(
+            split_description(item.description), item.assignee, subtasks, item.quantity
+        ),
+    )
+    await store.async_save()
+    entity.async_write_ha_state()
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -748,6 +953,11 @@ def async_register_ws_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_create_section)
     websocket_api.async_register_command(hass, ws_update_section)
     websocket_api.async_register_command(hass, ws_delete_section)
+    websocket_api.async_register_command(hass, ws_move_section)
+    websocket_api.async_register_command(hass, ws_add_preset_categories)
+    websocket_api.async_register_command(hass, ws_agenda)
+    websocket_api.async_register_command(hass, ws_complete_item)
+    websocket_api.async_register_command(hass, ws_complete_subtask)
     websocket_api.async_register_command(hass, ws_list_areas)
     websocket_api.async_register_command(hass, ws_list_floors)
     websocket_api.async_register_command(hass, ws_list_persons)

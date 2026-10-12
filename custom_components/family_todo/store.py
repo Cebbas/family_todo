@@ -29,6 +29,10 @@ transition and instead rolls the item forward to its next occurrence
 (new `due`, status back to needs_action, subtasks reset). See
 FamilyTodoListEntity.async_update_todo_item.
 
+`quantity` is a free-text amount ("2", "500 g") for shopping-list items -
+kept separate from `summary` so the item text stays clean for voice/
+search, but mirrored into the description block like the assignee is.
+
 `reminder_sent` backs the due-date push reminder (see reminders.py): it's
 set once a reminder has gone out for the item's *current* `due`, and reset
 to False by todo.py whenever `due` changes (including a recurrence
@@ -38,15 +42,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+import logging
 from typing import Any
 import uuid
 
 from dateutil.relativedelta import relativedelta
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
-from .const import STORAGE_KEY_PREFIX, STORAGE_VERSION
+from .const import DOMAIN, STORAGE_KEY_PREFIX, STORAGE_VERSION
+
+_LOGGER = logging.getLogger(__name__)
 
 RECURRENCE_UNITS = ("days", "weeks", "months")
 
@@ -93,15 +102,28 @@ class Subtask:
 
 @dataclass
 class Section:
-    """A named group of items within a list, optionally tied to an HA area."""
+    """A named group of items within a list, optionally tied to an HA area.
+
+    `category` is set on sections created from the shopping-list presets
+    (see categories.py) - it's what lets a new item be sorted into e.g.
+    "Mejeri" automatically by keyword, independent of what the section is
+    later renamed to.
+    """
 
     id: str
     name: str
     area_id: str | None = None
     icon: str | None = None
+    category: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "area_id": self.area_id, "icon": self.icon}
+        return {
+            "id": self.id,
+            "name": self.name,
+            "area_id": self.area_id,
+            "icon": self.icon,
+            "category": self.category,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Section":
@@ -110,6 +132,7 @@ class Section:
             name=data["name"],
             area_id=data.get("area_id"),
             icon=data.get("icon"),
+            category=data.get("category"),
         )
 
 
@@ -147,6 +170,7 @@ class TodoItemData:
     recurrence: Recurrence | None = None
     last_completed: str | None = None  # ISO date of the last time this was checked off
     reminder_sent: bool = False  # se reminders.py - nollställs varje gång `due` ändras
+    quantity: str | None = None  # fritext, t.ex. "2" eller "500 g" - mest för inköpslistor
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -161,6 +185,7 @@ class TodoItemData:
             "recurrence": self.recurrence.to_dict() if self.recurrence else None,
             "last_completed": self.last_completed,
             "reminder_sent": self.reminder_sent,
+            "quantity": self.quantity,
         }
 
     @classmethod
@@ -178,6 +203,7 @@ class TodoItemData:
             recurrence=Recurrence.from_dict(recurrence_data) if recurrence_data else None,
             last_completed=data.get("last_completed"),
             reminder_sent=bool(data.get("reminder_sent", False)),
+            quantity=data.get("quantity"),
         )
 
     @property
@@ -212,7 +238,10 @@ def split_description(description: str | None) -> str:
 
 
 def combine_description(
-    user_text: str | None, assignee: str | None, subtasks: list[Subtask]
+    user_text: str | None,
+    assignee: str | None,
+    subtasks: list[Subtask],
+    quantity: str | None = None,
 ) -> str | None:
     """Lägger till en auto-genererad rad för tilldelning/delsteg-status i `description`.
 
@@ -225,6 +254,8 @@ def combine_description(
     """
     user_text = (user_text or "").rstrip("\n")
     meta_lines = []
+    if quantity:
+        meta_lines.append(f"🔢 {quantity}")
     if assignee:
         meta_lines.append(f"👤 {assignee}")
     if subtasks:
@@ -244,6 +275,8 @@ class TodoListData:
         self._order: list[str] = [i.uid for i in (items or [])]
         self._sections: dict[str, Section] = {}
         self._section_order: list[str] = []
+        # Fylls av from_dict med det som inte gick att läsa in - se där.
+        self.load_errors: list[str] = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -255,19 +288,40 @@ class TodoListData:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "TodoListData":
-        data = data or {}
-        items_by_uid = {
-            uid: TodoItemData.from_dict(item_data) for uid, item_data in data.get("items", {}).items()
-        }
-        order = [uid for uid in data.get("order", []) if uid in items_by_uid]
+        """Bygger modellen från sparad data - tolerant mot trasiga poster.
+
+        En enskild uppgift/sektion som inte går att tolka hoppas över (och
+        noteras i `load_errors`) istället för att hela listan kraschar vid
+        uppstart. FamilyTodoStore använder `load_errors` för att spara undan
+        originaldatan och skapa ett repair-issue, se IDEAS.md "Robusthet".
+        """
+        errors: list[str] = []
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            errors.append(f"oväntat format på hela listan ({type(data).__name__})")
+            data = {}
+
+        items_by_uid: dict[str, TodoItemData] = {}
+        for uid, item_data in _as_dict(data.get("items"), "items", errors).items():
+            try:
+                items_by_uid[uid] = TodoItemData.from_dict(item_data)
+            except (KeyError, TypeError, ValueError, AttributeError) as err:
+                errors.append(f"uppgift {uid}: {err!r}")
+        order = [uid for uid in _as_list(data.get("order"), "order", errors) if uid in items_by_uid]
         # Om ordningslistan tappat bort en uid (t.ex. korrupt data) - visa den
         # ändå, sist, hellre än att tyst döljas.
         order += [uid for uid in items_by_uid if uid not in order]
 
-        sections_by_id = {
-            sid: Section.from_dict(section_data) for sid, section_data in data.get("sections", {}).items()
-        }
-        section_order = [sid for sid in data.get("section_order", []) if sid in sections_by_id]
+        sections_by_id: dict[str, Section] = {}
+        for sid, section_data in _as_dict(data.get("sections"), "sections", errors).items():
+            try:
+                sections_by_id[sid] = Section.from_dict(section_data)
+            except (KeyError, TypeError, ValueError, AttributeError) as err:
+                errors.append(f"sektion {sid}: {err!r}")
+        section_order = [
+            sid for sid in _as_list(data.get("section_order"), "section_order", errors) if sid in sections_by_id
+        ]
         section_order += [sid for sid in sections_by_id if sid not in section_order]
 
         model = cls()
@@ -275,6 +329,7 @@ class TodoListData:
         model._order = order
         model._sections = sections_by_id
         model._section_order = section_order
+        model.load_errors = errors
         return model
 
     @property
@@ -346,6 +401,21 @@ class TodoListData:
             setattr(section, key, value)
         return section
 
+    def move_section(self, section_id: str, previous_section_id: str | None) -> None:
+        """Samma semantik som `move`, fast för sektionsordningen."""
+        if section_id not in self._section_order:
+            return
+        self._section_order.remove(section_id)
+        if previous_section_id is None:
+            self._section_order.insert(0, section_id)
+        else:
+            try:
+                index = self._section_order.index(previous_section_id)
+            except ValueError:
+                self._section_order.append(section_id)
+            else:
+                self._section_order.insert(index + 1, section_id)
+
     def delete_section(self, section_id: str) -> None:
         """Tar bort sektionen. Dess uppgifter tas INTE bort - de blir omärkta.
 
@@ -360,22 +430,88 @@ class TodoListData:
                 item.section_id = None
 
 
-class FamilyTodoStore:
-    """Persists one list's `TodoListData` in Home Assistant's own storage."""
+def _as_dict(value: Any, name: str, errors: list[str]) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        errors.append(f"{name}: förväntade ett objekt, fick {type(value).__name__}")
+        return {}
+    return value
 
-    def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
+
+def _as_list(value: Any, name: str, errors: list[str]) -> list:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        errors.append(f"{name}: förväntade en lista, fick {type(value).__name__}")
+        return []
+    return value
+
+
+def corrupt_issue_id(entry_id: str) -> str:
+    return f"corrupt_list_{entry_id}"
+
+
+class FamilyTodoStore:
+    """Persists one list's `TodoListData` in Home Assistant's own storage.
+
+    Om den sparade datan inte går att läsa in helt (se
+    TodoListData.from_dict) sparas originalet undan i en egen backup-fil
+    *innan* något hinner skrivas över, och ett repair-issue skapas så det
+    syns under Inställningar → Reparationer istället för att listan bara
+    tyst ser tom/ofullständig ut. (Ren JSON-korruption fångar HA:s egen
+    Store redan, med ett eget repair-issue och en .corrupt-fil.)
+    """
+
+    def __init__(self, hass: HomeAssistant, entry_id: str, name: str | None = None) -> None:
+        self._hass = hass
+        self._entry_id = entry_id
+        self._name = name or entry_id
         self._store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}{entry_id}")
         self._data: TodoListData | None = None
 
     async def async_load(self) -> TodoListData:
         if self._data is None:
             raw = await self._store.async_load()
-            self._data = TodoListData.from_dict(raw)
+            model = TodoListData.from_dict(raw)
+            if model.load_errors:
+                await self._async_handle_load_errors(raw, model.load_errors)
+            else:
+                ir.async_delete_issue(self._hass, DOMAIN, corrupt_issue_id(self._entry_id))
+            self._data = model
         return self._data
+
+    async def _async_handle_load_errors(self, raw: Any, errors: list[str]) -> None:
+        stamp = dt_util.utcnow().strftime("%Y%m%d%H%M%S")
+        backup_key = f"{STORAGE_KEY_PREFIX}{self._entry_id}.backup_{stamp}"
+        await Store(self._hass, STORAGE_VERSION, backup_key).async_save(raw)
+        _LOGGER.error(
+            "Family Todo: listan %r gick inte att läsa in helt (%d fel: %s). "
+            "Originaldatan är sparad i .storage/%s",
+            self._name,
+            len(errors),
+            "; ".join(errors[:5]),
+            backup_key,
+        )
+        ir.async_create_issue(
+            self._hass,
+            DOMAIN,
+            corrupt_issue_id(self._entry_id),
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="corrupt_list",
+            translation_placeholders={
+                "name": self._name,
+                "count": str(len(errors)),
+                "backup": f".storage/{backup_key}",
+            },
+        )
 
     async def async_save(self) -> None:
         if self._data is not None:
             await self._store.async_save(self._data.to_dict())
 
     async def async_remove(self) -> None:
+        ir.async_delete_issue(self._hass, DOMAIN, corrupt_issue_id(self._entry_id))
         await self._store.async_remove()
