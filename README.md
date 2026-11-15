@@ -157,7 +157,9 @@ innan – ingen påminnelse skickas, det syns bara i panelen och på HA:s eget
 todo-kort. Lägger du dessutom till en **tid** (klicka på uppgiften → fältet
 "Förfaller") kan Family Todo skicka en **mobilpush** till den tilldelade
 personen om uppgiften fortfarande inte är avbockad när den tiden är inne –
-en gång, ingen upprepad tjatpåminnelse.
+en gång, ingen upprepad tjatpåminnelse. Notisen har en **Klar**-knapp
+(i HA:s mobilapp) som bockar av uppgiften direkt från telefonen - en
+återkommande uppgift rullar då vidare precis som vid avbockning i panelen.
 
 Två saker krävs för att det ska funka:
 

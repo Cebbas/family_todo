@@ -134,3 +134,71 @@ async def test_does_not_resend_already_reminded_item(hass):
     await _async_check_due_reminders(hass, dt_util.now())
 
     assert calls == []
+
+
+# ---- "Klar"-knappen i påminnelsen ----
+
+from homeassistant.core import Context  # noqa: E402
+
+from custom_components.family_todo.reminders import (  # noqa: E402
+    DONE_ACTION_PREFIX,
+    MOBILE_APP_ACTION_EVENT,
+    async_handle_notification_action,
+)
+from custom_components.family_todo.store import Recurrence  # noqa: E402
+
+
+async def test_reminder_carries_a_done_action(hass):
+    entity = await _make_entity(hass)
+    hass.states.async_set("person.anna", "home", {"friendly_name": "Anna"})
+    await async_get_notify_map_store(hass).async_set("person.anna", "mobile_app_annas_phone")
+    calls = []
+    hass.services.async_register("notify", "mobile_app_annas_phone", lambda call: calls.append(call))
+
+    await entity.async_create_todo_item(TodoItem(summary="Läxor"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, assignee="Anna", due=_overdue())
+    await _async_check_due_reminders(hass, None)
+    await hass.async_block_till_done()
+
+    actions = calls[0].data["data"]["actions"]
+    assert actions == [{"action": f"{DONE_ACTION_PREFIX}entry1::{uid}", "title": "Klar"}]
+
+
+async def test_done_action_completes_the_item(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Läxor"))
+    uid = entity.todo_items[0].uid
+
+    from homeassistant.core import Event
+
+    await async_handle_notification_action(
+        hass, Event(MOBILE_APP_ACTION_EVENT, {"action": f"{DONE_ACTION_PREFIX}entry1::{uid}"}, context=Context())
+    )
+    assert entity._model().get(uid).status == "completed"
+
+
+async def test_done_action_rolls_a_recurring_item_forward(hass, freezer):
+    freezer.move_to("2026-11-15 19:00:00")
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Soporna"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, recurrence=Recurrence(1, "weeks"), due="2026-11-15")
+    from homeassistant.core import Event
+
+    await async_handle_notification_action(
+        hass, Event(MOBILE_APP_ACTION_EVENT, {"action": f"{DONE_ACTION_PREFIX}entry1::{uid}"}, context=Context())
+    )
+    item = entity._model().get(uid)
+    assert (item.status, item.due) == ("needs_action", "2026-11-22")
+
+
+async def test_unrelated_and_malformed_actions_are_ignored(hass):
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Läxor"))
+    uid = entity.todo_items[0].uid
+    from homeassistant.core import Event
+
+    for action in ("SOMETHING_ELSE", f"{DONE_ACTION_PREFIX}no-separator", f"{DONE_ACTION_PREFIX}other::{uid}"):
+        await async_handle_notification_action(hass, Event(MOBILE_APP_ACTION_EVENT, {"action": action}))
+    assert entity._model().get(uid).status == "needs_action"

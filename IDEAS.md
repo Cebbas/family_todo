@@ -109,10 +109,17 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
   rullade vidare (`base.date()` i todo.py), så påminnelsen fungerade bara
   för allra första tillfället. Samma sak för återkommande delsteg. Nu
   följer klockslaget med, i lokal tid även över sommartidsskiftet
-  (`Recurrence.roll_due` i store.py) - 0.7.1.
+  (`Recurrence.roll_due` i store.py) - 0.8.0.
 - [x] En återkommande uppgift som bockades av långt efter förfallodatumet
   fick ett nytt förfallodatum som redan passerat (och därmed direkt en ny
-  påminnelse). Nu hoppas passerade tillfällen över - 0.7.1.
+  påminnelse). Nu hoppas passerade tillfällen över - 0.8.0.
+
+## Påminnelser
+- [x] "Klar"-knapp i påminnelsen (mobilappens actionable notifications):
+  `data.actions` i notisen, och en lyssnare på
+  `mobile_app_notification_action` som bockar av via entiteten (så
+  återkommande rullar vidare och loggas med vem). Samma barnregel som
+  panelen - 0.8.0.
 
 ## Robusthet
 - [x] Repair-issue när en listas lagringsfil inte går att läsa in helt -
