@@ -129,7 +129,11 @@ att den bara blir kvar som avklarad:
 
 1. Uppgiften öppnas igen (status tillbaka till "att göra")
 2. Förfallodatumet flyttas fram med intervallet, räknat från föregående
-   förfallodatum (eller från idag om inget fanns)
+   förfallodatum (eller från idag om inget fanns). Ett **klockslag** följer
+   med till nästa tillfälle (så påminnelsen fortsätter att fungera varje
+   gång), och tillfällen som redan passerat hoppas över - en veckosyssla
+   som bockas av tre veckor sent hamnar på nästa kommande tillfälle i samma
+   rytm, inte på ett datum som redan är försenat
 3. Eventuella delsteg nollställs, så nästa omgång börjar med en tom
    checklista
 

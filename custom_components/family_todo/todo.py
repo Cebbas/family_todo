@@ -154,11 +154,11 @@ class FamilyTodoListEntity(TodoListEntity):
             # omgången. Gäller oavsett var avbockningen kom ifrån (panelen,
             # röstassistenten, HA:s eget todo-kort) eftersom alla går via
             # den här metoden.
-            today = dt_util.now().date()
-            base = _parse_due(existing.due) or today
-            if hasattr(base, "date"):
-                base = base.date()
-            next_due = existing.recurrence.next_date(base)
+            now = dt_util.now()
+            today = now.date()
+            # Behåller klockslaget och hoppar förbi redan passerade
+            # tillfällen - se Recurrence.roll_due.
+            next_due = existing.recurrence.roll_due(existing.due, now)
             # A subtask's own recurrence *setting* carries over to the new
             # occurrence (it's independent metadata, not tied to whether
             # the parent item happened to just roll over) - its `due` does
@@ -182,7 +182,7 @@ class FamilyTodoListEntity(TodoListEntity):
                 summary=item.summary,
                 status=TodoItemStatus.NEEDS_ACTION.value,
                 description=combine_description(user_text, assignee, reset_subtasks, quantity),
-                due=next_due.isoformat(),
+                due=next_due,
                 last_completed=today.isoformat(),
                 subtasks=reset_subtasks,
                 # Nytt tillfälle, nytt due - ska kunna påminnas om igen (se

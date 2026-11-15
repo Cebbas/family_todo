@@ -442,22 +442,20 @@ def _roll_recurring_subtasks(old_subtasks: list, new_subtasks: list) -> list:
     checked - same "answer every occurrence, not just the first" reasoning,
     just scoped to one checklist entry instead of the whole item."""
     old_by_id = {s.id: s for s in old_subtasks}
-    today = dt_util.now().date()
+    now = dt_util.now()
     rolled = []
     for sub in new_subtasks:
         old = old_by_id.get(sub.id)
         just_completed = old is not None and not old.complete and sub.complete
         if just_completed and sub.recurrence is not None:
-            base = _parse_due(sub.due) or today
-            if hasattr(base, "date"):
-                base = base.date()
-            next_due = sub.recurrence.next_date(base)
             rolled.append(
                 Subtask(
                     id=sub.id,
                     summary=sub.summary,
                     complete=False,
-                    due=next_due.isoformat(),
+                    # Samma regler som uppgiften själv: klockslaget följer
+                    # med, passerade tillfällen hoppas över.
+                    due=sub.recurrence.roll_due(sub.due, now),
                     recurrence=sub.recurrence,
                 )
             )

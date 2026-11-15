@@ -365,3 +365,62 @@ def test_completion_log_round_trips_and_is_capped():
 
 def test_completion_log_missing_in_old_data_defaults_empty():
     assert TodoItemData.from_dict({"uid": "x", "summary": "Gammal"}).completion_log == []
+
+
+# ---- Recurrence.roll_due: next occurrence when a recurring item is checked off ----
+
+from datetime import datetime as _dt  # noqa: E402
+
+from homeassistant.util import dt as _dt_util  # noqa: E402
+
+from custom_components.family_todo.store import Recurrence as _Recurrence  # noqa: E402
+
+
+def _local(*args):
+    return _dt(*args, tzinfo=_dt_util.get_default_time_zone())
+
+
+def test_roll_due_keeps_time_of_day():
+    rec = _Recurrence(interval=1, unit="weeks")
+    now = _local(2026, 11, 15, 19, 0)
+    nxt = rec.roll_due(_local(2026, 11, 15, 18, 0).isoformat(), now)
+    assert _dt.fromisoformat(nxt) == _local(2026, 11, 22, 18, 0)
+
+
+def test_roll_due_date_only_stays_date_only():
+    rec = _Recurrence(interval=2, unit="weeks")
+    assert rec.roll_due("2026-11-15", _local(2026, 11, 15, 9, 0)) == "2026-11-29"
+
+
+def test_roll_due_skips_occurrences_already_passed():
+    """Three weeks late on a weekly chore -> next upcoming one, not one that's already overdue."""
+    rec = _Recurrence(interval=1, unit="weeks")
+    now = _local(2026, 11, 15, 12, 0)  # a Sunday
+    nxt = rec.roll_due(_local(2026, 10, 25, 18, 0).isoformat(), now)  # Sunday three weeks ago
+    assert _dt.fromisoformat(nxt) == _local(2026, 11, 15, 18, 0)  # later today, same rhythm
+
+
+def test_roll_due_date_only_may_land_on_today():
+    rec = _Recurrence(interval=1, unit="days")
+    assert rec.roll_due("2026-11-10", _local(2026, 11, 15, 9, 0)) == "2026-11-15"
+
+
+def test_roll_due_without_due_counts_from_today():
+    rec = _Recurrence(interval=3, unit="days")
+    assert rec.roll_due(None, _local(2026, 11, 15, 9, 0)) == "2026-11-18"
+
+
+def test_roll_due_keeps_local_clock_across_dst_change():
+    """18:00 in winter (+01:00) stays 18:00 local after the switch to summer time (+02:00)."""
+    from zoneinfo import ZoneInfo
+
+    original = _dt_util.get_default_time_zone()
+    _dt_util.set_default_time_zone(ZoneInfo("Europe/Stockholm"))
+    try:
+        rec = _Recurrence(interval=1, unit="weeks")
+        now = _local(2027, 3, 26, 19, 0)
+        nxt = _dt.fromisoformat(rec.roll_due("2027-03-26T18:00:00+01:00", now))
+        assert nxt.utcoffset().total_seconds() == 2 * 3600
+        assert _dt_util.as_local(nxt).hour == 18
+    finally:
+        _dt_util.set_default_time_zone(original)

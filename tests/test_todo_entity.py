@@ -4,7 +4,7 @@ Uses the entity directly (not through a full config entry setup) - `hass`
 and `entity_id` are set by hand, which is enough for `async_write_ha_state`
 to work without going through an entity platform.
 """
-from datetime import date
+from datetime import date, timedelta
 
 from homeassistant.components.todo import TodoItem, TodoItemStatus
 from homeassistant.util import dt as dt_util
@@ -92,7 +92,8 @@ async def test_move_item_reorders(hass):
 
 # ---- recurrence: completing a recurring item rolls it forward instead ----
 
-async def test_completing_recurring_item_reopens_it_with_next_due_date(hass):
+async def test_completing_recurring_item_reopens_it_with_next_due_date(hass, freezer):
+    freezer.move_to("2026-09-09 12:00:00")  # checked off on time
     entity = await _make_entity(hass)
     await entity.async_create_todo_item(TodoItem(summary="Byta sängkläder"))
     uid = entity.todo_items[0].uid
@@ -281,3 +282,36 @@ async def test_default_icon_is_regular_for_task_list(hass):
     entity = await _make_entity(hass, entry_id="tasks1")
     assert entity.icon == DEFAULT_ICON
 
+
+
+async def test_completing_recurring_item_keeps_time_of_day(hass, freezer):
+    """The bug: a timed due date rolled to a date-only one, so only the first occurrence got a reminder."""
+    freezer.move_to("2026-11-15 19:00:00")
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Ta ut soporna"))
+    uid = entity.todo_items[0].uid
+    local_due = dt_util.now().replace(hour=18, minute=0, second=0, microsecond=0)
+    entity._model().update(uid, recurrence=Recurrence(interval=1, unit="weeks"), due=local_due.isoformat())
+
+    await entity.async_update_todo_item(
+        TodoItem(uid=uid, summary="Ta ut soporna", status=TodoItemStatus.COMPLETED)
+    )
+
+    item = entity._model().get(uid)
+    rolled = dt_util.parse_datetime(item.due)
+    assert rolled is not None, "due must still carry a time of day"
+    assert dt_util.as_local(rolled).hour == 18
+    assert dt_util.as_local(rolled).date() == (local_due + timedelta(days=7)).date()
+    assert item.reminder_sent is False
+
+
+async def test_completing_overdue_recurring_item_lands_on_next_upcoming_date(hass, freezer):
+    freezer.move_to("2026-11-15 12:00:00")
+    entity = await _make_entity(hass)
+    await entity.async_create_todo_item(TodoItem(summary="Dammsuga"))
+    uid = entity.todo_items[0].uid
+    entity._model().update(uid, recurrence=Recurrence(interval=1, unit="weeks"), due="2026-10-20")
+
+    await entity.async_update_todo_item(TodoItem(uid=uid, summary="Dammsuga", status=TodoItemStatus.COMPLETED))
+
+    assert entity._model().get(uid).due == "2026-11-17"  # same weekday rhythm, not 2026-10-27

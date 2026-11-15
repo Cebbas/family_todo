@@ -104,6 +104,16 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
   titeln för tilldelad person - samma block täcker båda behoven, så ett
   extra titel-prefix bedömdes onödigt.
 
+## Buggar (fixade)
+- [x] En återkommande uppgift med klockslag tappade klockslaget när den
+  rullade vidare (`base.date()` i todo.py), så påminnelsen fungerade bara
+  för allra första tillfället. Samma sak för återkommande delsteg. Nu
+  följer klockslaget med, i lokal tid även över sommartidsskiftet
+  (`Recurrence.roll_due` i store.py) - 0.7.1.
+- [x] En återkommande uppgift som bockades av långt efter förfallodatumet
+  fick ett nytt förfallodatum som redan passerat (och därmed direkt en ny
+  påminnelse). Nu hoppas passerade tillfällen över - 0.7.1.
+
 ## Robusthet
 - [x] Repair-issue när en listas lagringsfil inte går att läsa in helt -
   två olika fall:
@@ -164,9 +174,9 @@ början. Själva återkommande-delen är klar (se ovan); resten återstår.
   som "Historik" i uppgiftens redigeringsvy med "i tid"/"N dagar sent"
 
 ## Trevligt-att-ha (ej påbörjat)
-- [ ] Koppling mot family-planner-card: visa dagens/veckans obockade
-  uppgifter (särskilt sysslor tilldelade ett barn) i "Idag"-vyn, liknande
-  hur family-planner-card redan visar binary_sensor-baserade "allmänna
-  sensorer"
+- [x] Koppling mot family-planner-card: dagens och försenade obockade
+  uppgifter visas under respektive tilldelad person i kortets "Idag"-vy
+  och går att bocka av direkt där (family-planner-card 0.5.0, via
+  `family_todo/agenda` + `complete_item`/`complete_subtask`)
 - [ ] Delade listor mellan flera HA-instanser (t.ex. två hushåll) –
   troligen orealistiskt utan en molntjänst, låg prioritet

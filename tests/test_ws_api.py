@@ -593,7 +593,8 @@ async def test_agenda_rejects_bad_dates(hass):
     assert connection.error[0] == "invalid_input"
 
 
-async def test_complete_item_rolls_recurring_item_forward(hass):
+async def test_complete_item_rolls_recurring_item_forward(hass, freezer):
+    freezer.move_to("2026-10-12 12:00:00")  # checked off on time
     entity = await _make_list(hass, "l1")
     await ws_api.ws_create_item.__wrapped__(
         hass,
@@ -618,7 +619,8 @@ async def test_complete_item_plain(hass):
     assert entity._model().get(uid).status == "completed"
 
 
-async def test_complete_subtask_marks_or_rolls(hass):
+async def test_complete_subtask_marks_or_rolls(hass, freezer):
+    freezer.move_to("2026-10-12 12:00:00")  # checked off on time
     from custom_components.family_todo.store import Recurrence, Subtask
 
     entity = await _make_list(hass, "l1")

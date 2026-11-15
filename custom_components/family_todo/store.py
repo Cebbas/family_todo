@@ -41,7 +41,7 @@ rollover), so the next occurrence can be reminded about too.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 import logging
 from typing import Any
 import uuid
@@ -139,6 +139,25 @@ class Section:
         )
 
 
+# Skydd mot en oändlig loop i Recurrence.roll_due om lagrad data är konstig
+# (t.ex. ett förfallodatum långt bak i tiden med intervallet "1 dag").
+_MAX_CATCH_UP_STEPS = 10_000
+
+
+def _parse_due_value(value: str | None) -> date | datetime | None:
+    """`due` som lagrat ("YYYY-MM-DD" eller ISO-datetime) -> date/datetime, eller None."""
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 @dataclass
 class Recurrence:
     """How often a task repeats, e.g. "every other week" (interval=2, unit="weeks")."""
@@ -154,8 +173,46 @@ class Recurrence:
         return cls(interval=int(data["interval"]), unit=data.get("unit", "weeks"))
 
     def next_date(self, from_date: date) -> date:
-        """Nästa förfallodatum räknat från `from_date` (oftast förra förfallodatumet)."""
+        """Nästa förfallodatum räknat från `from_date` (oftast förra förfallodatumet).
+
+        Fungerar lika bra med en datetime - klockslaget följer då med.
+        """
         return from_date + relativedelta(**{self.unit: self.interval})
+
+    def roll_due(self, current_due: str | None, now: datetime) -> str:
+        """Förfallodatumet för nästa tillfälle, som ISO-sträng, när det här bockas av.
+
+        - Räknas från förra förfallodatumet, så rytmen behålls (en
+          söndagssyssla förblir en söndagssyssla även om den görs på
+          tisdagen) - eller från idag om inget förfallodatum fanns.
+        - Ett klockslag på förfallodatumet följer med till nästa tillfälle,
+          i lokal tid (18:00 förblir 18:00 även över sommartidsskiftet).
+          Utan det skulle påminnelser (som kräver ett klockslag, se
+          reminders.py) bara fungera för allra första tillfället.
+        - Hoppar fram förbi tillfällen som redan passerat: en veckosyssla
+          som bockas av tre veckor sent hamnar på nästa kommande tillfälle,
+          inte på ett datum som redan är förfallet (och då direkt skulle
+          trigga en ny påminnelse). Ett datum-utan-tid får landa på idag -
+          det är fortfarande att göra idag, inte försenat.
+        """
+        parsed = _parse_due_value(current_due)
+        if isinstance(parsed, datetime):
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt_util.get_default_time_zone())
+            nxt = self.next_date(dt_util.as_local(parsed))
+            for _ in range(_MAX_CATCH_UP_STEPS):
+                if nxt > now:
+                    break
+                nxt = self.next_date(nxt)
+            return nxt.isoformat()
+
+        today = now.date()
+        nxt = self.next_date(parsed or today)
+        for _ in range(_MAX_CATCH_UP_STEPS):
+            if nxt >= today:
+                break
+            nxt = self.next_date(nxt)
+        return nxt.isoformat()
 
 
 @dataclass
