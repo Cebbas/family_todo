@@ -1,6 +1,10 @@
 {
   "domain": "family_todo",
   "name": "Family Todo",
+  "categories": [
+    "productivity_information.calendars_todos",
+    "productivity_information.shopping_groceries"
+  ],
   "codeowners": ["@Cebbas"],
   "config_flow": true,
   "dependencies": ["http", "frontend", "websocket_api"],
