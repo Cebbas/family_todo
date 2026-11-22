@@ -76,12 +76,17 @@ lösning: skriva in en sammanfattning i uppgiftens `description`-fält).
    **"Family Todo"** och skapa din första lista (du kan skapa fler direkt
    i sidopanelen efteråt).
 
-**Via HACS (custom repository):**
-1. HACS → tre punkter uppe till höger → *Anpassade repositories*
-2. Lägg till `https://github.com/Cebbas/family_todo` med kategori
-   *Integration*
-3. Sök upp "Family Todo" i HACS och installera, starta om HA, lägg sedan
-   till integrationen som i steg 3 ovan.
+**Via Marketplace (tidigare HACS):**
+1. Öppna **Marketplace** i sidomenyn → **Add from link** (länkikonen på
+   mobil)
+2. Klistra in `https://github.com/Cebbas/family_todo`, välj typ
+   *Integration* och tryck **Add** (första gången ber Marketplace dig
+   koppla ett GitHub-konto, det krävs för egna repositories)
+3. Installera "Family Todo", starta om HA och lägg sedan till
+   integrationen som i steg 3 ovan.
+
+Kör du fortfarande den fristående HACS-integrationen funkar det likadant:
+HACS → tre punkter uppe till höger → *Anpassade repositories*.
 
 ## Skapa och hantera listor
 
@@ -283,7 +288,7 @@ custom_components/
     www/
       family-todo-panel.js  # sidopanelens UI (vanilla JS)
 tests/               # pytest-svit (modell, entitet, ws-api)
-hacs.json            # måste ligga i repo-roten, inte under custom_components/, för HACS store-validering
+hacs.json            # måste ligga i repo-roten, inte under custom_components/ - Marketplace (fd. HACS) kräver den för att installera
 requirements_test.txt
 pytest.ini
 ```
